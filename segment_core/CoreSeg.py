@@ -299,6 +299,8 @@ class CoreSegInferenceBackend:
         return predictionResized
 
     def predictVolume(self, volumeArray, modelPath):
+        import numpy as np
+        
         array = np.asarray(volumeArray)
         self._logArrayStats("predictVolume/input_volume", array)
 
