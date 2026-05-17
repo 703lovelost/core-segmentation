@@ -64,7 +64,6 @@ class CoreSegWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.outputMaskSelector.nodeTypes = ["vtkMRMLSegmentationNode"]
 
         self.onUseBundledModel()
-        self.ui.modelInfoLabel.text = self.logic.defaultModelDescription()
         self._checkCanApply()
 
     def cleanup(self):
@@ -378,18 +377,6 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
         return resourcePathGetter("Models/default_segformer.pth")
 
     @staticmethod
-    def defaultModelDescription():
-        return (
-            "Model description."
-        )
-        # return (
-        #     "Each slice is resized to 512x512, normalized with albumentations.Normalize(), "
-        #     "passed to the model as a [1, 1, 512, 512] tensor, and the raw prediction map is "
-        #     "reshaped back to 512x512 and resized to the original slice size. "
-        #     "Binary mask is produced by thresholding the prediction volume."
-        # )
-
-    @staticmethod
     def _copyVolumeGeometry(referenceVolume, outputVolume):
         ijkToRas = vtk.vtkMatrix4x4()
         referenceVolume.GetIJKToRASMatrix(ijkToRas)
@@ -518,4 +505,4 @@ class CoreSegTest(ScriptedLoadableModuleTest):
 
     def test_CoreSeg_basic(self):
         logic = CoreSegLogic()
-        self.assertTrue(isinstance(logic.defaultModelDescription(), str))
+        self.assertIsNotNone(logic.backend)
