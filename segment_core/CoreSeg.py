@@ -1,6 +1,10 @@
 import logging
 import os
 import time
+from pathlib import Path
+import re
+import math
+from datetime import datetime
 
 import vtk
 import qt
@@ -63,8 +67,24 @@ class CoreSegWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.outputMaskSelector.baseName = "CoreSegMask"
         self.ui.outputMaskSelector.nodeTypes = ["vtkMRMLSegmentationNode"]
 
+        self.ui.FinetuneSliceSelector.connect("currentNodeChanged(vtkMRMLNode*)", self._CanAddTrain)
+        self.ui.FinetuneMaskSelector.connect("currentNodeChanged(vtkMRMLNode*)", self._CanAddTrain)
+        self.ui.DatasetName.textChanged.connect(self._CanAddTrain)
+        
+        self.ui.FinetuneSliceSelector.nodeTypes = ["vtkMRMLScalarVolumeNode"]
+        self.ui.FinetuneMaskSelector.nodeTypes = ["vtkMRMLSegmentationNode"]
+
+        self.ui.FinetuneSliceSelector.setMRMLScene(slicer.mrmlScene)
+        self.ui.FinetuneMaskSelector.setMRMLScene(slicer.mrmlScene)
+
+        current = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        self.ui.DatasetName.setPlainText(f"Dataset {current}")
+
+        self.ui.AddTrainDataButton.connect("clicked(bool)", self.onAddData)
+
         self.onUseBundledModel()
         self._checkCanApply()
+        self._CanAddTrain()
 
     def cleanup(self):
         self.removeObservers()
@@ -102,6 +122,55 @@ class CoreSegWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         self.ui.applyButton.toolTip = "Run slice-wise model inference."
 
+    def _CanAddTrain(self, caller = None, event = None):
+        hasSlice = self.ui.FinetuneSliceSelector.currentNode() is not None
+        hasMask = self.ui.FinetuneMaskSelector.currentNode() is not None
+        normName = self._is_valid_filename(self.ui.DatasetName.toPlainText())
+
+        self.ui.AddTrainDataButton.enabled = (
+            self.dependenciesOk
+            and hasSlice
+            and hasMask
+            and normName
+        )
+
+        if not self.dependenciesOk:
+            self.ui.AddTrainDataButton.toolTip = self.dependencyMessage
+            return
+        if not hasSlice:
+            self.ui.AddTrainDataButton.toolTip = "Select a slice scalar volume."
+            return
+        if not hasMask:
+            self.ui.AddTrainDataButton.toolTip = "Select a mask scalar volume."
+            return
+        
+
+    def _is_valid_filename(self, name):
+        if not name or name.strip() == "":
+            return True
+
+        invalid = r'[<>:"/\\|?*]'
+
+        if re.search(invalid, name):
+            return False
+
+        reserved = {
+            "CON", "PRN", "AUX", "NUL",
+            "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+            "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+        }
+
+        stem = Path(name).stem.upper()
+
+        if stem in reserved:
+            return False
+
+        # already_existing = os.listdir(self.logic.FINETUNE_PATH)
+        # if name in already_existing:
+        #     return False
+        
+        return True
+
     def onApplyButton(self):
         with slicer.util.tryWithErrorDisplay("Failed to run CoreSeg inference.", waitCursor=True):
             self.logic.process(
@@ -109,16 +178,24 @@ class CoreSegWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 outputMaskVolume=self.ui.outputMaskSelector.currentNode(),
                 outputPredictionVolume=self.ui.outputProbabilitySelector.currentNode(),
                 modelPath=self.ui.modelPathEdit.currentPath,
+                patch_size=self.ui.MaskResolutionBox.currentText,
                 threshold=float(self.ui.thresholdSliderWidget.value),
                 showResult=True,
+            )
+
+    def onAddData(self):
+        with slicer.util.tryWithErrorDisplay("Failed to Add new data to train.", waitCursor=True):
+            self.logic.AddData(
+                SliceVolume=self.ui.FinetuneSliceSelector.currentNode(),
+                MaskVolume=self.ui.FinetuneMaskSelector.currentNode(),
+                DatasetName=self.ui.DatasetName.toPlainText(),
             )
 
 
 class CoreSegInferenceBackend:
     DEBUG_LOGS = True
     DEBUG_PREFIX = "[CORESEG_DEBUG]"
-    TARGET_HEIGHT = 512
-    TARGET_WIDTH = 512
+    TARGET_SIZE = 512
 
     def __init__(self):
         self._torch = None
@@ -256,13 +333,23 @@ class CoreSegInferenceBackend:
 
         originalShape = tuple(x.shape)
 
-        x = A.Resize(self.TARGET_HEIGHT, self.TARGET_WIDTH)(image=x)["image"]
+        # x = A.Resize(self.TARGET_HEIGHT, self.TARGET_WIDTH)(image=x)["image"]
         x = A.Normalize()(image=x)["image"]
         x = np.asarray(x, dtype=np.float32)
 
         return x, originalShape
+    
+    def get_grid_positions(self, size, patch):
+        n = math.ceil(size / patch)
 
-    def predictSlice(self, sliceArray, modelPath):
+        if n == 1:
+            return [0]
+
+        stride = (size - patch) / (n - 1)
+
+        return [int(round(i * stride)) for i in range(n)]
+        
+    def predictSlice(self, sliceArray, modelPath, patch_size):
         import numpy as np
 
         torchModule, _, cv2 = self._importRuntime()
@@ -273,23 +360,54 @@ class CoreSegInferenceBackend:
         preparedSlice, originalShape = self._preprocessSlice(sliceArray)
         self._logArrayStats("predictSlice/prepared_slice", preparedSlice)
 
-        inputTensor = torchModule.tensor(preparedSlice, dtype=torchModule.float32).view(
-            1, 1, self.TARGET_HEIGHT, self.TARGET_WIDTH
-        ).to(device)
-        self._logTensorStats("predictSlice/input_tensor", inputTensor)
+        # inputTensor = torchModule.tensor(preparedSlice, dtype=torchModule.float32).view(
+        #     1, 1, self.TARGET_HEIGHT, self.TARGET_WIDTH
+        # ).to(device)
+        # inputTensor = torchModule.tensor(preparedSlice, dtype=torchModule.float32)
+        h, w = preparedSlice.shape
+
+        ys = self.get_grid_positions(h, patch_size)
+        xs = self.get_grid_positions(w, patch_size)
+        
+        patches = []
+        for y in ys:
+            for x in xs:
+                patch = preparedSlice[y:y+patch_size, x:x+patch_size]
+                patch = cv2.resize(patch, [self.TARGET_SIZE, self.TARGET_SIZE], interpolation=cv2.INTER_LINEAR)
+                patches.append(patch)
+        
+        patches = np.stack(patches)
+
+        patches = torchModule.tensor(patches, dtype = torchModule.float32).view(-1, 1, self.TARGET_SIZE, self.TARGET_SIZE)
+
+        self._logTensorStats("predictSlice/input_patches", patches)
 
         with torchModule.no_grad():
-            predictionTensor = model(inputTensor)
-            self._logTensorStats("predictSlice/raw_model_output", predictionTensor)
+            predictionTensor = torchModule.sigmoid(model(patches))
 
-            prediction512 = predictionTensor.reshape(self.TARGET_HEIGHT, self.TARGET_WIDTH)
-            prediction512 = prediction512.detach().cpu().numpy().astype(np.float32)
+            recon = np.zeros((h, w), dtype=np.float32)
+            weight = np.zeros((h, w), dtype=np.float32)
 
-        self._logArrayStats("predictSlice/raw_prediction_512", prediction512)
+            coords = [(y, x) for y in ys for x in xs]
+
+            for i, (y, x) in enumerate(coords):
+                pred = predictionTensor[i, 0].cpu().numpy().astype(np.float32)
+
+                pred = cv2.resize(pred, [patch_size, patch_size], interpolation=cv2.INTER_LINEAR)
+
+                recon[y:y+patch_size, x:x+patch_size] += pred
+                weight[y:y+patch_size, x:x+patch_size] += 1.0
+            
+            reconstructed = recon / np.maximum(weight, 1.0)
+
+            # prediction512 = predictionTensor.reshape(self.TARGET_HEIGHT, self.TARGET_WIDTH)
+            # prediction512 = prediction512.detach().cpu().numpy().astype(np.float32)
+
+        self._logArrayStats("predictSlice/reconstructed_prediction", reconstructed)
 
         originalHeight, originalWidth = originalShape
         predictionResized = cv2.resize(
-            prediction512,
+            reconstructed,
             (int(originalWidth), int(originalHeight)),
             interpolation=cv2.INTER_LINEAR,
         ).astype(np.float32)
@@ -297,14 +415,14 @@ class CoreSegInferenceBackend:
         self._logArrayStats("predictSlice/raw_prediction_resized", predictionResized)
         return predictionResized
 
-    def predictVolume(self, volumeArray, modelPath):
+    def predictVolume(self, volumeArray, modelPath, patch_size):
         import numpy as np
         
         array = np.asarray(volumeArray)
         self._logArrayStats("predictVolume/input_volume", array)
 
         if array.ndim == 2:
-            prediction2d = self.predictSlice(array, modelPath)
+            prediction2d = self.predictSlice(array, modelPath, patch_size)
             self._logArrayStats("predictVolume/output_prediction_2d", prediction2d)
             return prediction2d.astype(np.float32)
 
@@ -317,7 +435,7 @@ class CoreSegInferenceBackend:
             self._debug("predictVolume slice=%d/%d", int(sliceIndex), int(array.shape[0] - 1))
             self._logArrayStats(f"predictVolume/input_slice_{sliceIndex}", array[sliceIndex])
 
-            predictionSlice = self.predictSlice(array[sliceIndex], modelPath)
+            predictionSlice = self.predictSlice(array[sliceIndex], modelPath, patch_size)
             prediction[sliceIndex] = predictionSlice
 
             self._logArrayStats(f"predictVolume/output_prediction_slice_{sliceIndex}", predictionSlice)
@@ -340,6 +458,12 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
         self._dependenciesChecked = False
         self._dependenciesOk = False
         self._dependencyMessage = ""
+
+        base_dir = qt.QStandardPaths.writableLocation(qt.QStandardPaths.AppDataLocation)
+        path = os.path.join(base_dir, "CoreSeg")
+        os.makedirs(path, exist_ok=True)
+        self.FINETUNE_PATH = path 
+
 
     def checkDependencies(self, force=False):
         import importlib.util
@@ -393,7 +517,7 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
             segmentId = segmentation.AddEmptySegment(segmentName)
         return segmentId
 
-    def process(self, inputVolume, outputMaskVolume, outputPredictionVolume, modelPath, threshold=0.5, showResult=True):
+    def process(self, inputVolume, outputMaskVolume, outputPredictionVolume, modelPath, patch_size, threshold=0.5, showResult=True):
         self.requireDependencies()
         import numpy as np
         
@@ -405,6 +529,14 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
             raise ValueError("Output prediction volume is invalid.")
         if not os.path.isfile(modelPath):
             raise ValueError("Model file does not exist.")
+        
+        resolutionMap = {
+            "1:2": 256,
+            "1:4": 512,
+            "1:8": 1024,
+            "1:16": 2048,
+        }
+        patch_size = resolutionMap[patch_size]
 
         startTime = time.time()
         logging.info("CoreSeg inference started")
@@ -423,7 +555,7 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
         inputArray = np.copy(slicer.util.arrayFromVolume(inputVolume))
         self.backend._logArrayStats("process/input_array_copy", inputArray)
 
-        predictionArray = self.backend.predictVolume(inputArray, modelPath)
+        predictionArray = self.backend.predictVolume(inputArray, modelPath, patch_size)
         self.backend._logArrayStats("process/prediction_array", predictionArray)
 
         slicer.util.updateVolumeFromArray(outputPredictionVolume, predictionArray)
@@ -493,6 +625,44 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
         stopTime = time.time()
         logging.info(f"CoreSeg inference completed in {stopTime - startTime:.2f} seconds")
         self.backend._debug("process finished in %.2f seconds", float(stopTime - startTime))
+
+    def AddData(self, SliceVolume, MaskVolume, DatasetName):
+        self.requireDependencies()
+        import numpy as np
+
+        if SliceVolume is None:
+            raise ValueError("Slice volume is invalid.")
+        if SliceVolume.GetImageData() is None:
+            raise ValueError("Slice volume has no image data.")
+        if MaskVolume is None:
+            raise ValueError("Segmented volume is invalid.")
+        
+        logging.info(f"Adding data to {self.FINETUNE_PATH} file name {DatasetName}")
+
+        SliceArray = np.copy(slicer.util.arrayFromVolume(SliceVolume))
+
+        labelmapNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLabelMapVolumeNode")
+
+        slicer.modules.segmentations.logic().ExportAllSegmentsToLabelmapNode(
+            MaskVolume,
+            labelmapNode
+        )
+
+        MaskArray = slicer.util.arrayFromVolume(labelmapNode)
+
+        self.backend._logArrayStats("AddData/Slices", SliceArray)
+        self.backend._logArrayStats("AddData/Masks", MaskArray)
+
+        if SliceArray.shape != MaskArray.shape:
+            raise ValueError("Slices and Masks have different shapes.")
+
+        data_path = os.path.join(self.FINETUNE_PATH, DatasetName)
+        os.makedirs(data_path, exist_ok=False)
+
+        np.save(os.path.join(data_path, "slices"), SliceArray)
+        np.save(os.path.join(data_path, "masks"), MaskArray)
+        
+
 
 
 class CoreSegTest(ScriptedLoadableModuleTest):
