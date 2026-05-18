@@ -6,3 +6,4 @@ timm
 huggingface-hub
 safetensors
 tqdm
+segmentation-models-pytorch
