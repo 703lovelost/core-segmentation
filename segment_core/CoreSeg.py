@@ -378,7 +378,7 @@ class CoreSegInferenceBackend:
         
         patches = np.stack(patches)
 
-        patches = torchModule.tensor(patches, dtype = torchModule.float32).view(-1, 1, self.TARGET_SIZE, self.TARGET_SIZE)
+        patches = torchModule.as_tensor(patches, dtype=torchModule.float32, device=device).view(-1, 1, self.TARGET_SIZE, self.TARGET_SIZE)
 
         self._logTensorStats("predictSlice/input_patches", patches)
 
