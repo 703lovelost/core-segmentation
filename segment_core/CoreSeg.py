@@ -1,6 +1,7 @@
 import logging
 import os
 import time
+import json
 from pathlib import Path
 import re
 import math
@@ -626,6 +627,50 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
         logging.info(f"CoreSeg inference completed in {stopTime - startTime:.2f} seconds")
         self.backend._debug("process finished in %.2f seconds", float(stopTime - startTime))
 
+    @staticmethod
+    def _matrixToList(matrix):
+        return [
+            [float(matrix.GetElement(row, column)) for column in range(4)]
+            for row in range(4)
+        ]
+
+    @staticmethod
+    def _safeSaveNode(node, filePath):
+        if not slicer.util.saveNode(node, filePath):
+            raise RuntimeError(f"Failed to save node to {filePath}")
+
+    def _writeDatasetMetadata(self, dataPath, numpyPath, nrrdPath, SliceVolume, MaskVolume, labelmapNode, SliceArray, MaskArray):
+        ijkToRas = vtk.vtkMatrix4x4()
+        SliceVolume.GetIJKToRASMatrix(ijkToRas)
+
+        metadata = {
+            "format_version": 1,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "array_order": "zyx",
+            "image": {
+                "node_name": SliceVolume.GetName(),
+                "class_name": SliceVolume.GetClassName(),
+                "shape": list(SliceArray.shape),
+                "dtype": str(SliceArray.dtype),
+                "spacing": [float(value) for value in SliceVolume.GetSpacing()],
+                "origin": [float(value) for value in SliceVolume.GetOrigin()],
+                "ijk_to_ras": self._matrixToList(ijkToRas),
+                "numpy_path": os.path.relpath(os.path.join(numpyPath, "slices.npy"), dataPath),
+                "nrrd_path": os.path.relpath(os.path.join(nrrdPath, "slices.nrrd"), dataPath),
+            },
+            "mask": {
+                "node_name": MaskVolume.GetName(),
+                "class_name": MaskVolume.GetClassName(),
+                "shape": list(MaskArray.shape),
+                "dtype": str(MaskArray.dtype),
+                "numpy_path": os.path.relpath(os.path.join(numpyPath, "masks.npy"), dataPath),
+                "segmentation_nrrd_path": os.path.relpath(os.path.join(nrrdPath, "masks.seg.nrrd"), dataPath),
+            },
+        }
+
+        with open(os.path.join(dataPath, "metadata.json"), "w", encoding="utf-8") as file:
+            json.dump(metadata, file, ensure_ascii=False, indent=2)
+
     def AddData(self, SliceVolume, MaskVolume, DatasetName):
         self.requireDependencies()
         import numpy as np
@@ -655,14 +700,30 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
 
         if SliceArray.shape != MaskArray.shape:
             raise ValueError("Slices and Masks have different shapes.")
-
-        data_path = os.path.join(self.FINETUNE_PATH, DatasetName)
-        os.makedirs(data_path, exist_ok=False)
-
-        np.save(os.path.join(data_path, "slices"), SliceArray)
-        np.save(os.path.join(data_path, "masks"), MaskArray)
         
+        data_path = os.path.join(self.FINETUNE_PATH, DatasetName)
+        numpy_path = os.path.join(data_path, "numpy")
+        nrrd_path = os.path.join(data_path, "nrrd")
 
+        os.makedirs(data_path, exist_ok=False)
+        os.makedirs(numpy_path, exist_ok=False)
+        os.makedirs(nrrd_path, exist_ok=False)
+
+        np.save(os.path.join(numpy_path, "slices.npy"), SliceArray)
+        np.save(os.path.join(numpy_path, "masks.npy"), MaskArray)
+
+        self._safeSaveNode(SliceVolume, os.path.join(nrrd_path, "slices.nrrd"))
+        self._safeSaveNode(MaskVolume, os.path.join(nrrd_path, "masks.seg.nrrd"))
+        self._writeDatasetMetadata(
+            data_path,
+            numpy_path,
+            nrrd_path,
+            SliceVolume,
+            MaskVolume,
+            labelmapNode,
+            SliceArray,
+            MaskArray,
+        )
 
 
 class CoreSegTest(ScriptedLoadableModuleTest):
