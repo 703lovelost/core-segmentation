@@ -180,6 +180,7 @@ class CoreSegWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 outputPredictionVolume=self.ui.outputProbabilitySelector.currentNode(),
                 modelPath=self.ui.modelPathEdit.currentPath,
                 patch_size=self.ui.MaskResolutionBox.currentText,
+                pad_size=32,
                 threshold=float(self.ui.thresholdSliderWidget.value),
                 showResult=True,
             )
@@ -350,7 +351,7 @@ class CoreSegInferenceBackend:
 
         return [int(round(i * stride)) for i in range(n)]
         
-    def predictSlice(self, sliceArray, modelPath, patch_size):
+    def predictSlice(self, sliceArray, modelPath, patch_size = 512, pad_size = 32):
         import numpy as np
 
         torchModule, _, cv2 = self._importRuntime()
@@ -361,14 +362,20 @@ class CoreSegInferenceBackend:
         preparedSlice, originalShape = self._preprocessSlice(sliceArray)
         self._logArrayStats("predictSlice/prepared_slice", preparedSlice)
 
-        # inputTensor = torchModule.tensor(preparedSlice, dtype=torchModule.float32).view(
-        #     1, 1, self.TARGET_HEIGHT, self.TARGET_WIDTH
-        # ).to(device)
-        # inputTensor = torchModule.tensor(preparedSlice, dtype=torchModule.float32)
         h, w = preparedSlice.shape
 
-        ys = self.get_grid_positions(h, patch_size)
-        xs = self.get_grid_positions(w, patch_size)
+        if h % patch_size < pad_size * np.floor(h / patch_size) and patch_size != h:
+            h_pad = pad_size
+        else:
+            h_pad = 0
+
+        if w % patch_size < pad_size * np.floor(w / patch_size) and patch_size != w:
+            w_pad = pad_size
+        else:
+            w_pad = 0
+         
+        ys = self.get_grid_positions(h - h_pad * 2, patch_size - h_pad * 2)
+        xs = self.get_grid_positions(w - w_pad * 2, patch_size - w_pad * 2)
         
         patches = []
         for y in ys:
@@ -386,23 +393,17 @@ class CoreSegInferenceBackend:
         with torchModule.no_grad():
             predictionTensor = torchModule.sigmoid(model(patches))
 
-            recon = np.zeros((h, w), dtype=np.float32)
-            weight = np.zeros((h, w), dtype=np.float32)
+            reconstructed = np.zeros((h, w), dtype=np.float32)
 
             coords = [(y, x) for y in ys for x in xs]
 
             for i, (y, x) in enumerate(coords):
                 pred = predictionTensor[i, 0].cpu().numpy().astype(np.float32)
-
+                
                 pred = cv2.resize(pred, [patch_size, patch_size], interpolation=cv2.INTER_LINEAR)
 
-                recon[y:y+patch_size, x:x+patch_size] += pred
-                weight[y:y+patch_size, x:x+patch_size] += 1.0
-            
-            reconstructed = recon / np.maximum(weight, 1.0)
+                reconstructed[y:y+patch_size, x:x+patch_size] = np.maximum(reconstructed[y:y+patch_size, x:x+patch_size], pred)
 
-            # prediction512 = predictionTensor.reshape(self.TARGET_HEIGHT, self.TARGET_WIDTH)
-            # prediction512 = prediction512.detach().cpu().numpy().astype(np.float32)
 
         self._logArrayStats("predictSlice/reconstructed_prediction", reconstructed)
 
@@ -416,14 +417,14 @@ class CoreSegInferenceBackend:
         self._logArrayStats("predictSlice/raw_prediction_resized", predictionResized)
         return predictionResized
 
-    def predictVolume(self, volumeArray, modelPath, patch_size):
+    def predictVolume(self, volumeArray, modelPath, patch_size, pad_size):
         import numpy as np
         
         array = np.asarray(volumeArray)
         self._logArrayStats("predictVolume/input_volume", array)
 
         if array.ndim == 2:
-            prediction2d = self.predictSlice(array, modelPath, patch_size)
+            prediction2d = self.predictSlice(array, modelPath, patch_size, pad_size)
             self._logArrayStats("predictVolume/output_prediction_2d", prediction2d)
             return prediction2d.astype(np.float32)
 
@@ -518,7 +519,7 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
             segmentId = segmentation.AddEmptySegment(segmentName)
         return segmentId
 
-    def process(self, inputVolume, outputMaskVolume, outputPredictionVolume, modelPath, patch_size, threshold=0.5, showResult=True):
+    def process(self, inputVolume, outputMaskVolume, outputPredictionVolume, modelPath, patch_size, pad_size, threshold=0.5, showResult=True):
         self.requireDependencies()
         import numpy as np
         
@@ -556,7 +557,7 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
         inputArray = np.copy(slicer.util.arrayFromVolume(inputVolume))
         self.backend._logArrayStats("process/input_array_copy", inputArray)
 
-        predictionArray = self.backend.predictVolume(inputArray, modelPath, patch_size)
+        predictionArray = self.backend.predictVolume(inputArray, modelPath, patch_size, pad_size)
         self.backend._logArrayStats("process/prediction_array", predictionArray)
 
         slicer.util.updateVolumeFromArray(outputPredictionVolume, predictionArray)
