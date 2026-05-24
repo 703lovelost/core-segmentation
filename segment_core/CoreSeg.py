@@ -16,7 +16,7 @@ from slicer.ScriptedLoadableModule import ScriptedLoadableModuleTest
 from slicer.ScriptedLoadableModule import ScriptedLoadableModuleWidget
 from slicer.util import VTKObservationMixin
 
-import finetune
+import Resources.finetune as finetune
 
 
 class CoreSeg(ScriptedLoadableModule):
@@ -91,8 +91,13 @@ class CoreSegWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         self.ui.AddTrainDataButton.connect("clicked(bool)", self.onAddData)
 
-        self.ui.LearningRateBox.setCurrentIndex(1)
         self.ui.MaskResolutionBox.setCurrentIndex(1)
+        self.ui.LearningRateBox.setCurrentIndex(1)
+        self.ui.BatchSizeBox.setCurrentIndex(2)
+        self.ui.MaxEpochSpin.setValue(30)
+
+        self.ui.StartTrainButton.connect("clicked(bool)", self.onTrainModel)
+
 
         self.onUseBundledModel()
         self._checkCanApply()
@@ -323,6 +328,11 @@ class CoreSegWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         with slicer.util.tryWithErrorDisplay("Model train failed.", waitCursor=True):
             self.logic.Train(
                 modelPath=self.ui.modelPathEdit.currentPath,
+                lr=float(self.ui.LearningRateBox.currentText),
+                max_epochs=int(self.ui.MaxEpochSpin.value),
+                base_data_prop=float(self.ui.BaseDatasetProportionSlider.value),
+                batchsize=int(self.ui.BatchSizeBox.currentText),
+                val_prop=float(self.ui.ValidationProportionSlider.value)
             )
 
 
@@ -584,7 +594,6 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
         "albumentations": "albumentations",
         "cv2": "opencv-python",
     }
-    BASE_DATASET_PATH = r"Resources/Finetune"
 
     def __init__(self):
         super().__init__()
@@ -598,6 +607,11 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
         os.makedirs(path, exist_ok=True)
         self.USER_DATASET_PATH = path 
 
+        moduleDir = os.path.dirname(os.path.abspath(__file__))
+        self.BASE_DATASET_PATH = os.path.join(moduleDir, 'Resources', 'Finetune')
+
+        if not os.path.exists(self.BASE_DATASET_PATH):
+            raise ValueError(f'Base dataset path {self.BASE_DATASET_PATH} doest not exist')
 
     def checkDependencies(self, force=False):
         import importlib.util
@@ -877,7 +891,7 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
         if MaskVolume is None:
             raise ValueError("Segmented volume is invalid.")
         
-        logging.info(f"Adding data to {self.FINETUNE_PATH} file name {DatasetName}")
+        logging.info(f"Adding data to {self.USER_DATASET_PATH} file name {DatasetName}")
 
         FullSliceArray = np.copy(slicer.util.arrayFromVolume(SliceVolume))
         if FullSliceArray.ndim != 3:
@@ -916,7 +930,7 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
         self.backend._logArrayStats("AddData/Slices", SliceArray)
         self.backend._logArrayStats("AddData/Masks", MaskArray)
         
-        data_path = os.path.join(self.FINETUNE_PATH, DatasetName)
+        data_path = os.path.join(self.USER_DATASET_PATH, DatasetName)
         numpy_path = os.path.join(data_path, "numpy")
         nrrd_path = os.path.join(data_path, "nrrd")
 
@@ -974,7 +988,7 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
         )
     
     def Train(self, modelPath, lr, max_epochs, base_data_prop, batchsize, val_prop):
-        model, device = self.loadModel(modelPath)
+        model, device = self.backend.loadModel(modelPath)
 
         finetune.Train(model=model, 
                        device=device,
