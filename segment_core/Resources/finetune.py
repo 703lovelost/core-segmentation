@@ -1,6 +1,6 @@
 from torch.utils.data import Dataset, ConcatDataset, DataLoader, WeightedRandomSampler
 
-import qt
+import qt # type: ignore
 import torch
 import numpy as np
 import albumentations as A

@@ -7,14 +7,14 @@ import re
 import math
 from datetime import datetime
 
-import vtk
-import qt
-import slicer
-from slicer.ScriptedLoadableModule import ScriptedLoadableModule
-from slicer.ScriptedLoadableModule import ScriptedLoadableModuleLogic
-from slicer.ScriptedLoadableModule import ScriptedLoadableModuleTest
-from slicer.ScriptedLoadableModule import ScriptedLoadableModuleWidget
-from slicer.util import VTKObservationMixin
+import vtk # type: ignore
+import qt # type: ignore
+import slicer # type: ignore
+from slicer.ScriptedLoadableModule import ScriptedLoadableModule # type: ignore
+from slicer.ScriptedLoadableModule import ScriptedLoadableModuleLogic # type: ignore
+from slicer.ScriptedLoadableModule import ScriptedLoadableModuleTest # type: ignore
+from slicer.ScriptedLoadableModule import ScriptedLoadableModuleWidget # type: ignore
+from slicer.util import VTKObservationMixin # type: ignore
 
 import Resources.finetune as finetune
 
