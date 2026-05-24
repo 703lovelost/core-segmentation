@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>435</width>
-    <height>494</height>
+    <height>540</height>
    </rect>
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
@@ -260,13 +260,87 @@
        </widget>
       </item>
       <item row="2" column="0">
+       <widget class="QLabel" name="FinetuneSubsetLabel">
+        <property name="text">
+         <string>Subset</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="1">
+       <layout class="QHBoxLayout" name="FinetuneSubsetLayout">
+        <item>
+         <layout class="QVBoxLayout" name="FinetuneDimensionLayout">
+          <item>
+           <widget class="QLabel" name="FinetuneDimensionLabel">
+            <property name="text">
+             <string>Dimension</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLineEdit" name="FinetuneDimensionEdit">
+            <property name="enabled">
+             <bool>false</bool>
+            </property>
+            <property name="placeholderText">
+             <string>0..2</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item>
+         <layout class="QVBoxLayout" name="FinetuneFromLayout">
+          <item>
+           <widget class="QLabel" name="FinetuneFromLabel">
+            <property name="text">
+             <string>From</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLineEdit" name="FinetuneFromEdit">
+            <property name="enabled">
+             <bool>false</bool>
+            </property>
+            <property name="placeholderText">
+             <string>0</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item>
+         <layout class="QVBoxLayout" name="FinetuneToLayout">
+          <item>
+           <widget class="QLabel" name="FinetuneToLabel">
+            <property name="text">
+             <string>To</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLineEdit" name="FinetuneToEdit">
+            <property name="enabled">
+             <bool>false</bool>
+            </property>
+            <property name="placeholderText">
+             <string>last</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+       </layout>
+      </item>
+      <item row="3" column="0">
        <widget class="QLabel" name="label_4">
         <property name="text">
          <string>Segmented volume</string>
         </property>
        </widget>
       </item>
-      <item row="4" column="0" colspan="2">
+      <item row="5" column="0" colspan="2">
        <widget class="QPushButton" name="AddTrainDataButton">
         <property name="enabled">
          <bool>false</bool>
@@ -276,10 +350,10 @@
         </property>
        </widget>
       </item>
-      <item row="3" column="1">
+      <item row="4" column="1">
        <widget class="QPlainTextEdit" name="DatasetName"/>
       </item>
-      <item row="3" column="0">
+      <item row="4" column="0">
        <widget class="QLabel" name="label_5">
         <property name="text">
          <string>Dataset name</string>
@@ -302,7 +376,7 @@
         </property>
        </widget>
       </item>
-      <item row="2" column="1">
+      <item row="3" column="1">
        <widget class="qMRMLNodeComboBox" name="FinetuneMaskSelector">
         <property name="enabled">
          <bool>true</bool>

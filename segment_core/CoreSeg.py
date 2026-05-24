@@ -68,15 +68,21 @@ class CoreSegWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.outputMaskSelector.baseName = "CoreSegMask"
         self.ui.outputMaskSelector.nodeTypes = ["vtkMRMLSegmentationNode"]
 
-        self.ui.FinetuneSliceSelector.connect("currentNodeChanged(vtkMRMLNode*)", self._CanAddTrain)
+        self.ui.FinetuneSliceSelector.connect("currentNodeChanged(vtkMRMLNode*)", self._onFinetuneSliceChanged)
         self.ui.FinetuneMaskSelector.connect("currentNodeChanged(vtkMRMLNode*)", self._CanAddTrain)
         self.ui.DatasetName.textChanged.connect(self._CanAddTrain)
+        self.ui.FinetuneDimensionEdit.textChanged.connect(self._onSubsetDimensionChanged)
+        self.ui.FinetuneFromEdit.textChanged.connect(self._CanAddTrain)
+        self.ui.FinetuneToEdit.textChanged.connect(self._CanAddTrain)
         
         self.ui.FinetuneSliceSelector.nodeTypes = ["vtkMRMLScalarVolumeNode"]
         self.ui.FinetuneMaskSelector.nodeTypes = ["vtkMRMLSegmentationNode"]
 
         self.ui.FinetuneSliceSelector.setMRMLScene(slicer.mrmlScene)
         self.ui.FinetuneMaskSelector.setMRMLScene(slicer.mrmlScene)
+        self.ui.FinetuneDimensionEdit.setValidator(qt.QIntValidator(0, 2, self.ui.FinetuneDimensionEdit))
+        self.ui.FinetuneFromEdit.setValidator(qt.QIntValidator(0, 2147483647, self.ui.FinetuneFromEdit))
+        self.ui.FinetuneToEdit.setValidator(qt.QIntValidator(0, 2147483647, self.ui.FinetuneToEdit))
 
         current = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         self.ui.DatasetName.setPlainText(f"Dataset {current}")
@@ -85,6 +91,7 @@ class CoreSegWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         self.onUseBundledModel()
         self._checkCanApply()
+        self._updateSubsetControls()
         self._CanAddTrain()
 
     def cleanup(self):
@@ -123,16 +130,118 @@ class CoreSegWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         self.ui.applyButton.toolTip = "Run slice-wise model inference."
 
+    def _onFinetuneSliceChanged(self, caller=None, event=None):
+        self._updateSubsetControls(reset=True)
+        self._CanAddTrain()
+
+    def _onSubsetDimensionChanged(self, text=None):
+        self._updateSubsetRangeForDimension()
+        self._CanAddTrain()
+
+    def _setSubsetControlsEnabled(self, enabled):
+        enabled = bool(enabled)
+        for widget in (
+            self.ui.FinetuneDimensionEdit,
+            self.ui.FinetuneFromEdit,
+            self.ui.FinetuneToEdit,
+        ):
+            widget.setEnabled(enabled)
+            widget.setReadOnly(not enabled)
+
+    def _finetuneSliceArrayShape(self):
+        volume = self.ui.FinetuneSliceSelector.currentNode()
+        if volume is None or volume.GetImageData() is None:
+            return None
+        try:
+            return tuple(slicer.util.arrayFromVolume(volume).shape)
+        except Exception:
+            return None
+
+    def _updateSubsetControls(self, reset=False):
+        shape = self._finetuneSliceArrayShape()
+        has3dVolume = shape is not None and len(shape) == 3
+        self._setSubsetControlsEnabled(has3dVolume)
+
+        if not has3dVolume:
+            if reset:
+                self.ui.FinetuneDimensionEdit.clear()
+                self.ui.FinetuneFromEdit.clear()
+                self.ui.FinetuneToEdit.clear()
+            return
+
+        if reset or not self.ui.FinetuneDimensionEdit.text.strip():
+            self.ui.FinetuneDimensionEdit.setText("0")
+        if reset or not self.ui.FinetuneFromEdit.text.strip():
+            self.ui.FinetuneFromEdit.setText("0")
+        self._updateSubsetRangeForDimension(reset_to_full=reset)
+
+    def _updateSubsetRangeForDimension(self, reset_to_full=False):
+        shape = self._finetuneSliceArrayShape()
+        if shape is None or len(shape) != 3:
+            return
+
+        try:
+            dimension = int(self.ui.FinetuneDimensionEdit.text)
+        except ValueError:
+            return
+
+        if dimension < 0 or dimension >= len(shape):
+            return
+
+        maxIndex = int(shape[dimension] - 1)
+        if reset_to_full or not self.ui.FinetuneToEdit.text.strip():
+            self.ui.FinetuneToEdit.setText(str(maxIndex))
+            return
+
+        try:
+            currentTo = int(self.ui.FinetuneToEdit.text)
+        except ValueError:
+            self.ui.FinetuneToEdit.setText(str(maxIndex))
+            return
+
+        if currentTo > maxIndex:
+            self.ui.FinetuneToEdit.setText(str(maxIndex))
+
+    def _getSubsetParameters(self):
+        shape = self._finetuneSliceArrayShape()
+        if shape is None or len(shape) != 3:
+            return None, None, None
+
+        try:
+            dimension = int(self.ui.FinetuneDimensionEdit.text)
+            frameFrom = int(self.ui.FinetuneFromEdit.text)
+            frameTo = int(self.ui.FinetuneToEdit.text)
+        except ValueError:
+            return None, None, None
+
+        if dimension < 0 or dimension >= len(shape):
+            return None, None, None
+        if frameFrom < 0 or frameTo < 0:
+            return None, None, None
+        if frameFrom > frameTo:
+            return None, None, None
+        if frameTo >= shape[dimension]:
+            return None, None, None
+
+        return dimension, frameFrom, frameTo
+
     def _CanAddTrain(self, caller = None, event = None):
+        shape = self._finetuneSliceArrayShape()
+        has3dVolume = shape is not None and len(shape) == 3
+        self._setSubsetControlsEnabled(has3dVolume)
+
         hasSlice = self.ui.FinetuneSliceSelector.currentNode() is not None
         hasMask = self.ui.FinetuneMaskSelector.currentNode() is not None
         normName = self._is_valid_filename(self.ui.DatasetName.toPlainText())
+        dimension, frameFrom, frameTo = self._getSubsetParameters()
+        hasValidSubset = dimension is not None and frameFrom is not None and frameTo is not None
 
         self.ui.AddTrainDataButton.enabled = (
             self.dependenciesOk
             and hasSlice
             and hasMask
             and normName
+            and hasValidSubset
         )
 
         if not self.dependenciesOk:
@@ -144,6 +253,14 @@ class CoreSegWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         if not hasMask:
             self.ui.AddTrainDataButton.toolTip = "Select a mask scalar volume."
             return
+        if not hasValidSubset:
+            self.ui.AddTrainDataButton.toolTip = "Set a valid 3D volume subset: Dimension in [0, 2], From <= To, To inside selected dimension."
+            return
+        if not normName:
+            self.ui.AddTrainDataButton.toolTip = "Dataset name contains invalid file name characters."
+            return
+
+        self.ui.AddTrainDataButton.toolTip = "Add selected volume subset to the training dataset."
         
 
     def _is_valid_filename(self, name):
@@ -186,10 +303,14 @@ class CoreSegWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     def onAddData(self):
         with slicer.util.tryWithErrorDisplay("Failed to Add new data to train.", waitCursor=True):
+            dimension, frameFrom, frameTo = self._getSubsetParameters()
             self.logic.AddData(
                 SliceVolume=self.ui.FinetuneSliceSelector.currentNode(),
                 MaskVolume=self.ui.FinetuneMaskSelector.currentNode(),
                 DatasetName=self.ui.DatasetName.toPlainText(),
+                SubsampleDimension=dimension,
+                SubsampleFrom=frameFrom,
+                SubsampleTo=frameTo,
             )
 
 
@@ -639,22 +760,39 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
         if not slicer.util.saveNode(node, filePath):
             raise RuntimeError(f"Failed to save node to {filePath}")
 
-    def _writeDatasetMetadata(self, dataPath, numpyPath, nrrdPath, SliceVolume, MaskVolume, labelmapNode, SliceArray, MaskArray):
-        ijkToRas = vtk.vtkMatrix4x4()
-        SliceVolume.GetIJKToRASMatrix(ijkToRas)
+    def _writeDatasetMetadata(self, dataPath, numpyPath, nrrdPath, SliceVolume, MaskVolume, labelmapNode, SliceArray, MaskArray, SubsampleDimension, SubsampleFrom, SubsampleTo):
+        sourceIjkToRas = vtk.vtkMatrix4x4()
+        SliceVolume.GetIJKToRASMatrix(sourceIjkToRas)
+
+        offset = self._arrayAxisToIjkOffset(SubsampleDimension, SubsampleFrom)
+        originPoint = [float(offset[0]), float(offset[1]), float(offset[2]), 1.0]
+        rasPoint = [0.0, 0.0, 0.0, 1.0]
+        sourceIjkToRas.MultiplyPoint(originPoint, rasPoint)
+
+        subsetIjkToRas = vtk.vtkMatrix4x4()
+        subsetIjkToRas.DeepCopy(sourceIjkToRas)
+        subsetIjkToRas.SetElement(0, 3, rasPoint[0])
+        subsetIjkToRas.SetElement(1, 3, rasPoint[1])
+        subsetIjkToRas.SetElement(2, 3, rasPoint[2])
 
         metadata = {
             "format_version": 1,
             "created_at": datetime.now().isoformat(timespec="seconds"),
             "array_order": "zyx",
+            "subset": {
+                "dimension": int(SubsampleDimension),
+                "from": int(SubsampleFrom),
+                "to": int(SubsampleTo),
+                "inclusive": True,
+            },
             "image": {
                 "node_name": SliceVolume.GetName(),
                 "class_name": SliceVolume.GetClassName(),
                 "shape": list(SliceArray.shape),
                 "dtype": str(SliceArray.dtype),
                 "spacing": [float(value) for value in SliceVolume.GetSpacing()],
-                "origin": [float(value) for value in SliceVolume.GetOrigin()],
-                "ijk_to_ras": self._matrixToList(ijkToRas),
+                "origin": [float(rasPoint[0]), float(rasPoint[1]), float(rasPoint[2])],
+                "ijk_to_ras": self._matrixToList(subsetIjkToRas),
                 "numpy_path": os.path.relpath(os.path.join(numpyPath, "slices.npy"), dataPath),
                 "nrrd_path": os.path.relpath(os.path.join(nrrdPath, "slices.nrrd"), dataPath),
             },
@@ -671,7 +809,52 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
         with open(os.path.join(dataPath, "metadata.json"), "w", encoding="utf-8") as file:
             json.dump(metadata, file, ensure_ascii=False, indent=2)
 
-    def AddData(self, SliceVolume, MaskVolume, DatasetName):
+    @staticmethod
+    def _subsetArray(array, dimension, frameFrom, frameTo):
+        selection = [slice(None)] * array.ndim
+        selection[int(dimension)] = slice(int(frameFrom), int(frameTo) + 1)
+        return array[tuple(selection)]
+
+    @staticmethod
+    def _arrayAxisToIjkOffset(dimension, frameFrom):
+        offset = [0, 0, 0]
+        offset[2 - int(dimension)] = int(frameFrom)
+        return offset
+
+    @staticmethod
+    def _copySubsetVolumeGeometry(referenceVolume, outputVolume, dimension, frameFrom):
+        ijkToRas = vtk.vtkMatrix4x4()
+        referenceVolume.GetIJKToRASMatrix(ijkToRas)
+
+        offset = CoreSegLogic._arrayAxisToIjkOffset(dimension, frameFrom)
+        originPoint = [float(offset[0]), float(offset[1]), float(offset[2]), 1.0]
+        rasPoint = [0.0, 0.0, 0.0, 1.0]
+        ijkToRas.MultiplyPoint(originPoint, rasPoint)
+
+        subsetIjkToRas = vtk.vtkMatrix4x4()
+        subsetIjkToRas.DeepCopy(ijkToRas)
+        subsetIjkToRas.SetElement(0, 3, rasPoint[0])
+        subsetIjkToRas.SetElement(1, 3, rasPoint[1])
+        subsetIjkToRas.SetElement(2, 3, rasPoint[2])
+
+        outputVolume.SetIJKToRASMatrix(subsetIjkToRas)
+        outputVolume.SetOrigin(rasPoint[0], rasPoint[1], rasPoint[2])
+        outputVolume.SetSpacing(referenceVolume.GetSpacing())
+        outputVolume.CreateDefaultDisplayNodes()
+
+    def _createSubsetScalarVolumeNode(self, sourceVolume, array, name, dimension, frameFrom):
+        node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLScalarVolumeNode", name)
+        slicer.util.updateVolumeFromArray(node, array)
+        self._copySubsetVolumeGeometry(sourceVolume, node, dimension, frameFrom)
+        return node
+
+    def _createSubsetLabelMapNode(self, sourceVolume, array, name, dimension, frameFrom):
+        node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLabelMapVolumeNode", name)
+        slicer.util.updateVolumeFromArray(node, array)
+        self._copySubsetVolumeGeometry(sourceVolume, node, dimension, frameFrom)
+        return node
+
+    def AddData(self, SliceVolume, MaskVolume, DatasetName, SubsampleDimension=None, SubsampleFrom=None, SubsampleTo=None):
         self.requireDependencies()
         import numpy as np
 
@@ -684,7 +867,21 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
         
         logging.info(f"Adding data to {self.FINETUNE_PATH} file name {DatasetName}")
 
-        SliceArray = np.copy(slicer.util.arrayFromVolume(SliceVolume))
+        FullSliceArray = np.copy(slicer.util.arrayFromVolume(SliceVolume))
+        if FullSliceArray.ndim != 3:
+            raise ValueError(f"Raw volume must be a 3D tensor, got shape {FullSliceArray.shape}.")
+
+        if SubsampleDimension is None or SubsampleFrom is None or SubsampleTo is None:
+            raise ValueError("Subset parameters are required.")
+
+        SubsampleDimension = int(SubsampleDimension)
+        SubsampleFrom = int(SubsampleFrom)
+        SubsampleTo = int(SubsampleTo)
+
+        if SubsampleDimension < 0 or SubsampleDimension >= FullSliceArray.ndim:
+            raise ValueError("Subset dimension must be 0, 1, or 2.")
+        if SubsampleFrom < 0 or SubsampleTo < SubsampleFrom or SubsampleTo >= FullSliceArray.shape[SubsampleDimension]:
+            raise ValueError("Subset range is outside selected raw volume dimension.")
 
         labelmapNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLabelMapVolumeNode")
 
@@ -693,13 +890,19 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
             labelmapNode
         )
 
-        MaskArray = slicer.util.arrayFromVolume(labelmapNode)
+        FullMaskArray = np.copy(slicer.util.arrayFromVolume(labelmapNode))
+
+        self.backend._logArrayStats("AddData/FullSlices", FullSliceArray)
+        self.backend._logArrayStats("AddData/FullMasks", FullMaskArray)
+
+        if FullSliceArray.shape != FullMaskArray.shape:
+            raise ValueError("Slices and Masks have different shapes.")
+
+        SliceArray = np.copy(self._subsetArray(FullSliceArray, SubsampleDimension, SubsampleFrom, SubsampleTo))
+        MaskArray = np.copy(self._subsetArray(FullMaskArray, SubsampleDimension, SubsampleFrom, SubsampleTo))
 
         self.backend._logArrayStats("AddData/Slices", SliceArray)
         self.backend._logArrayStats("AddData/Masks", MaskArray)
-
-        if SliceArray.shape != MaskArray.shape:
-            raise ValueError("Slices and Masks have different shapes.")
         
         data_path = os.path.join(self.FINETUNE_PATH, DatasetName)
         numpy_path = os.path.join(data_path, "numpy")
@@ -712,8 +915,38 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
         np.save(os.path.join(numpy_path, "slices.npy"), SliceArray)
         np.save(os.path.join(numpy_path, "masks.npy"), MaskArray)
 
-        self._safeSaveNode(SliceVolume, os.path.join(nrrd_path, "slices.nrrd"))
-        self._safeSaveNode(MaskVolume, os.path.join(nrrd_path, "masks.seg.nrrd"))
+        subsetSliceNode = None
+        subsetLabelmapNode = None
+        subsetSegmentationNode = None
+        try:
+            subsetSliceNode = self._createSubsetScalarVolumeNode(
+                SliceVolume,
+                SliceArray,
+                "CoreSegSubsetSlices",
+                SubsampleDimension,
+                SubsampleFrom,
+            )
+            subsetLabelmapNode = self._createSubsetLabelMapNode(
+                SliceVolume,
+                MaskArray,
+                "CoreSegSubsetMasksLabelmap",
+                SubsampleDimension,
+                SubsampleFrom,
+            )
+            subsetSegmentationNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentationNode", "CoreSegSubsetMasks")
+            subsetSegmentationNode.SetReferenceImageGeometryParameterFromVolumeNode(subsetSliceNode)
+            slicer.modules.segmentations.logic().ImportLabelmapToSegmentationNode(
+                subsetLabelmapNode,
+                subsetSegmentationNode,
+            )
+
+            self._safeSaveNode(subsetSliceNode, os.path.join(nrrd_path, "slices.nrrd"))
+            self._safeSaveNode(subsetSegmentationNode, os.path.join(nrrd_path, "masks.seg.nrrd"))
+        finally:
+            for node in (subsetSegmentationNode, subsetLabelmapNode, subsetSliceNode, labelmapNode):
+                if node is not None:
+                    slicer.mrmlScene.RemoveNode(node)
+
         self._writeDatasetMetadata(
             data_path,
             numpy_path,
@@ -723,6 +956,9 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
             labelmapNode,
             SliceArray,
             MaskArray,
+            SubsampleDimension,
+            SubsampleFrom,
+            SubsampleTo,
         )
 
 
