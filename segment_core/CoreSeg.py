@@ -16,6 +16,8 @@ from slicer.ScriptedLoadableModule import ScriptedLoadableModuleTest
 from slicer.ScriptedLoadableModule import ScriptedLoadableModuleWidget
 from slicer.util import VTKObservationMixin
 
+import finetune
+
 
 class CoreSeg(ScriptedLoadableModule):
     def __init__(self, parent):
@@ -82,6 +84,9 @@ class CoreSegWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.DatasetName.setPlainText(f"Dataset {current}")
 
         self.ui.AddTrainDataButton.connect("clicked(bool)", self.onAddData)
+
+        self.ui.LearningRateBox.setCurrentIndex(1)
+        self.ui.MaskResolutionBox.setCurrentIndex(1)
 
         self.onUseBundledModel()
         self._checkCanApply()
@@ -191,6 +196,12 @@ class CoreSegWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 SliceVolume=self.ui.FinetuneSliceSelector.currentNode(),
                 MaskVolume=self.ui.FinetuneMaskSelector.currentNode(),
                 DatasetName=self.ui.DatasetName.toPlainText(),
+            )
+
+    def onTrainModel(self):
+        with slicer.util.tryWithErrorDisplay("Model train failed.", waitCursor=True):
+            self.logic.Train(
+                modelPath=self.ui.modelPathEdit.currentPath,
             )
 
 
@@ -353,7 +364,6 @@ class CoreSegInferenceBackend:
         
     def predictSlice(self, sliceArray, modelPath, patch_size = 512, pad_size = 32):
         import numpy as np
-
         torchModule, _, cv2 = self._importRuntime()
         model, device = self.loadModel(modelPath)
 
@@ -400,7 +410,7 @@ class CoreSegInferenceBackend:
             for i, (y, x) in enumerate(coords):
                 pred = predictionTensor[i, 0].cpu().numpy().astype(np.float32)
                 
-                pred = cv2.resize(pred, [patch_size, patch_size], interpolation=cv2.INTER_LINEAR)
+                pred = cv2.resize(pred, [min(patch_size, h), min(patch_size, w)], interpolation=cv2.INTER_LINEAR)
 
                 reconstructed[y:y+patch_size, x:x+patch_size] = np.maximum(reconstructed[y:y+patch_size, x:x+patch_size], pred)
 
@@ -453,6 +463,7 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
         "albumentations": "albumentations",
         "cv2": "opencv-python",
     }
+    BASE_DATASET_PATH = r"Resources/Finetune"
 
     def __init__(self):
         super().__init__()
@@ -464,7 +475,7 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
         base_dir = qt.QStandardPaths.writableLocation(qt.QStandardPaths.AppDataLocation)
         path = os.path.join(base_dir, "CoreSeg")
         os.makedirs(path, exist_ok=True)
-        self.FINETUNE_PATH = path 
+        self.USER_DATASET_PATH = path 
 
 
     def checkDependencies(self, force=False):
@@ -725,6 +736,28 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
             SliceArray,
             MaskArray,
         )
+    
+    def Train(self, modelPath, lr, max_epochs, base_data_prop, batchsize, val_prop):
+        model, device = self.loadModel(modelPath)
+
+        finetune.Train(model=model, 
+                       device=device,
+                       lr=lr,
+                       base_data_path=self.BASE_DATASET_PATH, 
+                       user_data_path=self.USER_DATASET_PATH,
+                       base_prop=base_data_prop,
+                       val_prop=val_prop,
+                       batchsize=batchsize,
+                       max_epochs=max_epochs)
+
+        
+
+
+
+
+
+            
+
 
 
 class CoreSegTest(ScriptedLoadableModuleTest):
