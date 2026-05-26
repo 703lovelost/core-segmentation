@@ -7,3 +7,4 @@ huggingface-hub
 safetensors
 tqdm
 segmentation-models-pytorch
+scikit-learn
