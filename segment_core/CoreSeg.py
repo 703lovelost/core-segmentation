@@ -6,6 +6,9 @@ from pathlib import Path
 import re
 import math
 from datetime import datetime
+import sys
+import ctypes
+
 
 import vtk # type: ignore
 import qt # type: ignore
@@ -15,8 +18,6 @@ from slicer.ScriptedLoadableModule import ScriptedLoadableModuleLogic # type: ig
 from slicer.ScriptedLoadableModule import ScriptedLoadableModuleTest # type: ignore
 from slicer.ScriptedLoadableModule import ScriptedLoadableModuleWidget # type: ignore
 from slicer.util import VTKObservationMixin # type: ignore
-
-import Resources.finetune as finetune
 
 
 class CoreSeg(ScriptedLoadableModule):
@@ -325,6 +326,9 @@ class CoreSegWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             )
 
     def onTrainModel(self):
+        self.ui.StartTrainButton.enabled = False
+        self.ui.StartTrainButton.text = "Training..."
+
         with slicer.util.tryWithErrorDisplay("Model train failed.", waitCursor=True):
             self.logic.Train(
                 modelPath=self.ui.modelPathEdit.currentPath,
@@ -612,6 +616,8 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
 
         if not os.path.exists(self.BASE_DATASET_PATH):
             raise ValueError(f'Base dataset path {self.BASE_DATASET_PATH} doest not exist')
+        
+        self.trainProcess = None
 
     def checkDependencies(self, force=False):
         import importlib.util
@@ -868,6 +874,23 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
         outputVolume.SetSpacing(referenceVolume.GetSpacing())
         outputVolume.CreateDefaultDisplayNodes()
 
+    @staticmethod
+    def _toShortPath(path):
+            path = os.path.abspath(path)
+
+            if os.name != "nt":
+                return path
+
+            buffer = ctypes.create_unicode_buffer(4096)
+            result = ctypes.windll.kernel32.GetShortPathNameW(
+                path,
+                buffer,
+                4096
+            )
+            if result == 0:
+                return path
+            return buffer.value
+
     def _createSubsetScalarVolumeNode(self, sourceVolume, array, name, dimension, frameFrom):
         node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLScalarVolumeNode", name)
         slicer.util.updateVolumeFromArray(node, array)
@@ -879,6 +902,34 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
         slicer.util.updateVolumeFromArray(node, array)
         self._copySubsetVolumeGeometry(sourceVolume, node, dimension, frameFrom)
         return node
+    
+    def _onTrainStdout(self):
+
+        data = self.trainProcess.readAllStandardOutput()
+
+        text = data.data().decode("utf-8", errors="ignore")
+
+        print(text, flush=True)
+
+        logging.info(text)
+
+    def _onTrainFinished(self, exitCode):
+        if exitCode == 0:
+            slicer.util.infoDisplay("Training completed")
+        else:
+            slicer.util.errorDisplay(
+                f"Training failed\nExit code: {exitCode}"
+            )
+
+    def _onTrainStderr(self):
+
+        data = self.trainProcess.readAllStandardError()
+
+        text = data.data().decode("utf-8", errors="ignore")
+
+        print("STDERR:", text, flush=True)
+
+        logging.error(text)
 
     def AddData(self, SliceVolume, MaskVolume, DatasetName, SubsampleDimension=None, SubsampleFrom=None, SubsampleTo=None):
         self.requireDependencies()
@@ -986,19 +1037,72 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
             SubsampleFrom,
             SubsampleTo,
         )
+
     
     def Train(self, modelPath, lr, max_epochs, base_data_prop, batchsize, val_prop):
-        model, device = self.backend.loadModel(modelPath)
+        moduleDir = os.path.dirname(os.path.abspath(__file__))
 
-        finetune.Train(model=model, 
-                       device=device,
-                       lr=lr,
-                       base_data_path=self.BASE_DATASET_PATH, 
-                       user_data_path=self.USER_DATASET_PATH,
-                       base_prop=base_data_prop,
-                       val_prop=val_prop,
-                       batchsize=batchsize,
-                       max_epochs=max_epochs)
+        trainerScript = os.path.join(
+        moduleDir, 
+        "Resources",
+        "finetune.py"
+        )
+
+        pythonExecutable = os.path.join(slicer.app.slicerHome, "bin", "PythonSlicer.exe")
+        logging.info(f"PYTHON: {pythonExecutable}")
+
+        trainerScript = self._toShortPath(trainerScript)
+        logging.info(f"Trainer Script: {trainerScript}")
+
+        args = [
+            trainerScript,
+
+            "--model_path", self._toShortPath(modelPath),
+
+            "--lr", str(lr),
+
+            "--max_epochs", str(max_epochs),
+
+            "--base_data_path", self._toShortPath(self.BASE_DATASET_PATH),
+
+            "--user_data_path", self._toShortPath(self.USER_DATASET_PATH),
+
+            "--base_prop",  str(base_data_prop),
+
+            "--val_prop", str(val_prop),
+
+            "--batchsize", str(batchsize),
+        ]
+
+        self.trainProcess = qt.QProcess()
+
+        self.trainProcess.readyReadStandardOutput.connect(
+            self._onTrainStdout
+        )
+
+        self.trainProcess.finished.connect(
+            self._onTrainFinished
+        )
+
+        self.trainProcess.readyReadStandardError.connect(
+            self._onTrainStderr
+        )
+
+        self.trainProcess.start(
+            pythonExecutable,
+            args
+        )
+
+
+        # finetune.Train(model=model, 
+        #                device=device,
+        #                lr=lr,
+        #                base_data_path=self.BASE_DATASET_PATH, 
+        #                user_data_path=self.USER_DATASET_PATH,
+        #                base_prop=base_data_prop,
+        #                val_prop=val_prop,
+        #                batchsize=batchsize,
+        #                max_epochs=max_epochs)
 
         
 

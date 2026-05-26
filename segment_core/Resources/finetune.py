@@ -7,6 +7,8 @@ import albumentations as A
 
 import os
 import math
+import argparse
+import sys
 
 def read_dataset_list(path):
     dataset_dirs = os.listdir(path)
@@ -205,8 +207,52 @@ def Train(model, device, lr, base_data_path, user_data_path, base_prop, val_prop
             loss = bce_loss(preds, masks.unsqueeze(1)) + dice_loss(preds, masks)
             loss.backward()
             optimizer.step()
+
+
+def loadModel(modelPath):
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+        model = torch.load(modelPath, map_location=device, weights_only=False)
+        model = model.to(device)
+
+        print("Loaded model type=%s device=%s", type(model).__name__, device)
+
+        return model, device
         
-    
+
+def main():
+
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument("--model_path")
+    parser.add_argument("--base_data_path")
+    parser.add_argument("--user_data_path")
+    parser.add_argument("--lr", type=float)
+    parser.add_argument("--base_prop", type=float)
+    parser.add_argument("--val_prop", type=float)
+    parser.add_argument("--batchsize", type=int)
+    parser.add_argument("--max_epochs", type=int)
+
+    args = parser.parse_args()
+
+    print('args parsed', flush = True)
+
+    model, device = loadModel(args.model_path)
+
+    Train(
+        model=model,
+        device=device,
+        lr=args.lr,
+        base_data_path=args.base_data_path,
+        user_data_path=args.user_data_path,
+        base_prop=args.base_prop,
+        val_prop=args.val_prop,
+        batchsize=args.batchsize,
+        max_epochs=args.max_epochs,
+    )
+
+    print("TRAINING_DONE", flush=True)
 
 
-    
+if __name__ == "__main__":
+    main()    
