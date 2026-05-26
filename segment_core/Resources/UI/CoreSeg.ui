@@ -401,20 +401,6 @@
         </property>
        </widget>
       </item>
-      <item row="3" column="0">
-       <widget class="QLabel" name="label_7">
-        <property name="text">
-         <string>Batch size</string>
-        </property>
-       </widget>
-      </item>
-      <item row="2" column="0">
-       <widget class="QLabel" name="label_8">
-        <property name="text">
-         <string>Learning rate</string>
-        </property>
-       </widget>
-      </item>
       <item row="0" column="1">
        <widget class="ctkSliderWidget" name="BaseDatasetProportionSlider">
         <property name="singleStep">
@@ -425,6 +411,33 @@
         </property>
         <property name="value">
          <double>0.800000000000000</double>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="label_9">
+        <property name="text">
+         <string>Validation proportion</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="ctkSliderWidget" name="ValidationProportionSlider">
+        <property name="singleStep">
+         <double>0.050000000000000</double>
+        </property>
+        <property name="maximum">
+         <double>0.500000000000000</double>
+        </property>
+        <property name="value">
+         <double>0.150000000000000</double>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel" name="label_8">
+        <property name="text">
+         <string>Learning rate</string>
         </property>
        </widget>
       </item>
@@ -445,6 +458,13 @@
           <string>1e-7</string>
          </property>
         </item>
+       </widget>
+      </item>
+      <item row="3" column="0">
+       <widget class="QLabel" name="label_7">
+        <property name="text">
+         <string>Batch size</string>
+        </property>
        </widget>
       </item>
       <item row="3" column="1">
@@ -476,26 +496,6 @@
         </item>
        </widget>
       </item>
-      <item row="1" column="1">
-       <widget class="ctkSliderWidget" name="ValidationProportionSlider">
-        <property name="singleStep">
-         <double>0.050000000000000</double>
-        </property>
-        <property name="maximum">
-         <double>0.500000000000000</double>
-        </property>
-        <property name="value">
-         <double>0.150000000000000</double>
-        </property>
-       </widget>
-      </item>
-      <item row="1" column="0">
-       <widget class="QLabel" name="label_9">
-        <property name="text">
-         <string>Validation proportion</string>
-        </property>
-       </widget>
-      </item>
       <item row="4" column="0">
        <widget class="QLabel" name="label_10">
         <property name="text">
@@ -517,6 +517,13 @@
        <widget class="QPushButton" name="StartTrainButton">
         <property name="text">
          <string>Start train</string>
+        </property>
+       </widget>
+      </item>
+      <item row="6" column="0" colspan="2">
+       <widget class="QProgressBar" name="TrainProgressBar">
+        <property name="value">
+         <number>0</number>
         </property>
        </widget>
       </item>
