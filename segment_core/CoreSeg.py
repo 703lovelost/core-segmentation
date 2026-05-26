@@ -55,7 +55,7 @@ class CoreSegWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui = slicer.util.childWidgetVariables(uiWidget)
         uiWidget.setMRMLScene(slicer.mrmlScene)
 
-        self.logic = CoreSegLogic()
+        self.logic = CoreSegLogic(self.ui.TrainProgressBar)
         self.dependenciesOk, self.dependencyMessage = self.logic.checkDependencies(force=True)
 
         self.ui.inputSelector.connect("currentNodeChanged(vtkMRMLNode*)", self._checkCanApply)
@@ -336,7 +336,7 @@ class CoreSegWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 max_epochs=int(self.ui.MaxEpochSpin.value),
                 base_data_prop=float(self.ui.BaseDatasetProportionSlider.value),
                 batchsize=int(self.ui.BatchSizeBox.currentText),
-                val_prop=float(self.ui.ValidationProportionSlider.value)
+                val_prop=float(self.ui.ValidationProportionSlider.value),
             )
 
 
@@ -599,7 +599,7 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
         "cv2": "opencv-python",
     }
 
-    def __init__(self):
+    def __init__(self, TrainProgressBar):
         super().__init__()
         self.backend = CoreSegInferenceBackend()
         self._dependenciesChecked = False
@@ -618,6 +618,7 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
             raise ValueError(f'Base dataset path {self.BASE_DATASET_PATH} doest not exist')
         
         self.trainProcess = None
+        self.TrainProgressBar = TrainProgressBar
 
     def checkDependencies(self, force=False):
         import importlib.util
@@ -904,15 +905,30 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
         return node
     
     def _onTrainStdout(self):
-
         data = self.trainProcess.readAllStandardOutput()
 
         text = data.data().decode("utf-8", errors="ignore")
 
-        print(text, flush=True)
+        logging.info(f'TRAIN NODE: {text}')
 
-        logging.info(text)
+        for line in text.splitlines():
+            line = line.strip()
+            if line.startswith("PROGRESS"):
+                try:
+                    _, epoch, max_epochs = line.split(":")
 
+                    epoch = int(epoch)
+                    max_epochs = int(max_epochs)
+
+                    percent = int((epoch / max_epochs) * 100)
+
+                    self.TrainProgressBar.setValue(percent)
+                    self.TrainProgressBar.setFormat(
+                        f"{epoch}/{max_epochs} epochs (%p%)"
+                    )
+                except Exception as e:
+                    print("Progress parse error:", e)
+                    
     def _onTrainFinished(self, exitCode):
         if exitCode == 0:
             slicer.util.infoDisplay("Training completed")
@@ -926,8 +942,6 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
         data = self.trainProcess.readAllStandardError()
 
         text = data.data().decode("utf-8", errors="ignore")
-
-        print("STDERR:", text, flush=True)
 
         logging.error(text)
 
@@ -1093,24 +1107,7 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
             args
         )
 
-
-        # finetune.Train(model=model, 
-        #                device=device,
-        #                lr=lr,
-        #                base_data_path=self.BASE_DATASET_PATH, 
-        #                user_data_path=self.USER_DATASET_PATH,
-        #                base_prop=base_data_prop,
-        #                val_prop=val_prop,
-        #                batchsize=batchsize,
-        #                max_epochs=max_epochs)
-
-        
-
-
-
-
-
-            
+    
 
 
 
