@@ -61,7 +61,7 @@ class CoreSegWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.inputSelector.connect("currentNodeChanged(vtkMRMLNode*)", self._checkCanApply)
         self.ui.outputProbabilitySelector.connect("currentNodeChanged(vtkMRMLNode*)", self._checkCanApply)
         self.ui.outputMaskSelector.connect("currentNodeChanged(vtkMRMLNode*)", self._checkCanApply)
-        self.ui.modelPathEdit.connect("currentPathChanged(QString)", self._checkCanApply)
+        self.ui.modelPathEdit.connect("currentPathChanged(QString)", self._refreshButtons)
         self.ui.applyButton.connect("clicked(bool)", self.onApplyButton)
         self.ui.useBundledModelButton.connect("clicked(bool)", self.onUseBundledModel)
 
@@ -99,11 +99,12 @@ class CoreSegWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         self.ui.StartTrainButton.connect("clicked(bool)", self.onTrainModel)
 
-
         self.onUseBundledModel()
-        self._checkCanApply()
         self._updateSubsetControls()
-        self._CanAddTrain()
+        self._refreshButtons()
+
+    def _isBusy(self):
+        return self.logic is not None and self.logic.isBusy()
 
     def cleanup(self):
         self.removeObservers()
@@ -112,7 +113,7 @@ class CoreSegWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         modelPath = self.logic.defaultModelPath(self.resourcePath)
         if os.path.exists(modelPath):
             self.ui.modelPathEdit.currentPath = modelPath
-        self._checkCanApply()
+        self._refreshButtons()
 
     def _checkCanApply(self, caller=None, event=None):
         hasInput = self.ui.inputSelector.currentNode() is not None
@@ -124,10 +125,14 @@ class CoreSegWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             and hasInput
             and hasPrediction
             and hasModel
+            and not self._isBusy()
         )
 
         if not self.dependenciesOk:
             self.ui.applyButton.toolTip = self.dependencyMessage
+            return
+        if self._isBusy():
+            self.ui.applyButton.toolTip = "Another operation is running."
             return
         if not hasInput:
             self.ui.applyButton.toolTip = "Select an input scalar volume."
@@ -253,10 +258,14 @@ class CoreSegWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             and hasMask
             and normName
             and hasValidSubset
+            and not self._isBusy()
         )
 
         if not self.dependenciesOk:
             self.ui.AddTrainDataButton.toolTip = self.dependencyMessage
+            return
+        if self._isBusy():
+            self.ui.AddTrainDataButton.toolTip = "Another operation is running."
             return
         if not hasSlice:
             self.ui.AddTrainDataButton.toolTip = "Select a slice scalar volume."
@@ -272,7 +281,41 @@ class CoreSegWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             return
 
         self.ui.AddTrainDataButton.toolTip = "Add selected volume subset to the training dataset."
-        
+
+    def _CanStartTrain(self, caller=None, event=None):
+        hasModel = os.path.isfile(self.ui.modelPathEdit.currentPath)
+
+        self.ui.StartTrainButton.enabled = (
+            self.dependenciesOk
+            and hasModel
+            and not self._isBusy()
+        )
+
+        if self._isBusy():
+            self.ui.StartTrainButton.toolTip = "Another operation is running."
+        elif not self.dependenciesOk:
+            self.ui.StartTrainButton.toolTip = self.dependencyMessage
+        elif not hasModel:
+            self.ui.StartTrainButton.toolTip = "Select a valid model checkpoint file."
+        else:
+            self.ui.StartTrainButton.toolTip = "Start model fine-tuning."
+
+    def _refreshButtons(self):
+        self.ui.useBundledModelButton.enabled = (
+            self.dependenciesOk
+            and not self._isBusy()
+        )
+
+        if not self.dependenciesOk:
+            self.ui.useBundledModelButton.toolTip = self.dependencyMessage
+        elif self._isBusy():
+            self.ui.useBundledModelButton.toolTip = "Another operation is running."
+        else:
+            self.ui.useBundledModelButton.toolTip = "Use bundled model checkpoint."
+
+        self._checkCanApply()
+        self._CanAddTrain()
+        self._CanStartTrain()
 
     def _is_valid_filename(self, name):
         if not name or name.strip() == "":
@@ -300,18 +343,51 @@ class CoreSegWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         
         return True
 
+    def _setBusyUi(self, busy, text=None):
+        if busy:
+            self.ui.applyButton.enabled = False
+            self.ui.AddTrainDataButton.enabled = False
+            self.ui.StartTrainButton.enabled = False
+            self.ui.useBundledModelButton.enabled = False
+
+            self.ui.applyButton.toolTip = "Another CoreSeg operation is running."
+            self.ui.AddTrainDataButton.toolTip = "Another CoreSeg operation is running."
+            self.ui.StartTrainButton.toolTip = "Another CoreSeg operation is running."
+            self.ui.useBundledModelButton.toolTip = "Another CoreSeg operation is running."
+
+            if text is not None:
+                self.ui.StartTrainButton.text = text
+
+            return
+
+        self.ui.StartTrainButton.text = "Start train"
+        self._refreshButtons()
+
+    def _onInferenceFinishedUi(self):
+        self._setBusyUi(False)
+
+    def _onTrainFinishedUi(self):
+        self._setBusyUi(False)
+
     def onApplyButton(self):
-        with slicer.util.tryWithErrorDisplay("Failed to run CoreSeg inference.", waitCursor=True):
-            self.logic.process(
-                inputVolume=self.ui.inputSelector.currentNode(),
-                outputMaskVolume=self.ui.outputMaskSelector.currentNode(),
-                outputPredictionVolume=self.ui.outputProbabilitySelector.currentNode(),
-                modelPath=self.ui.modelPathEdit.currentPath,
-                patch_size=self.ui.MaskResolutionBox.currentText,
-                pad_size=32,
-                threshold=float(self.ui.thresholdSliderWidget.value),
-                showResult=True,
-            )
+        self._setBusyUi(True, "Inference...")
+
+        try:
+            with slicer.util.tryWithErrorDisplay("Failed to start CoreSeg inference.", waitCursor=False):
+                self.logic.RunInference(
+                    inputVolume=self.ui.inputSelector.currentNode(),
+                    outputMaskVolume=self.ui.outputMaskSelector.currentNode(),
+                    outputPredictionVolume=self.ui.outputProbabilitySelector.currentNode(),
+                    modelPath=self.ui.modelPathEdit.currentPath,
+                    patch_size=self.ui.MaskResolutionBox.currentText,
+                    pad_size=32,
+                    threshold=float(self.ui.thresholdSliderWidget.value),
+                    showResult=True,
+                    finishedCallback=self._onInferenceFinishedUi,
+                )
+        except Exception:
+            self._onInferenceFinishedUi()
+            raise
 
     def onAddData(self):
         with slicer.util.tryWithErrorDisplay("Failed to Add new data to train.", waitCursor=True):
@@ -326,18 +402,22 @@ class CoreSegWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             )
 
     def onTrainModel(self):
-        self.ui.StartTrainButton.enabled = False
-        self.ui.StartTrainButton.text = "Training..."
+        self._setBusyUi(True, "Training...")
 
-        with slicer.util.tryWithErrorDisplay("Model train failed.", waitCursor=True):
-            self.logic.Train(
-                modelPath=self.ui.modelPathEdit.currentPath,
-                lr=float(self.ui.LearningRateBox.currentText),
-                max_epochs=int(self.ui.MaxEpochSpin.value),
-                base_data_prop=float(self.ui.BaseDatasetProportionSlider.value),
-                batchsize=int(self.ui.BatchSizeBox.currentText),
-                val_prop=float(self.ui.ValidationProportionSlider.value),
-            )
+        try:
+            with slicer.util.tryWithErrorDisplay("Model train failed.", waitCursor=False):
+                self.logic.Train(
+                    modelPath=self.ui.modelPathEdit.currentPath,
+                    lr=float(self.ui.LearningRateBox.currentText),
+                    max_epochs=int(self.ui.MaxEpochSpin.value),
+                    base_data_prop=float(self.ui.BaseDatasetProportionSlider.value),
+                    batchsize=int(self.ui.BatchSizeBox.currentText),
+                    val_prop=float(self.ui.ValidationProportionSlider.value),
+                    finishedCallback=self._onTrainFinishedUi,
+                )
+        except Exception:
+            self._onTrainFinishedUi()
+            raise
 
 
 class CoreSegInferenceBackend:
@@ -562,7 +642,7 @@ class CoreSegInferenceBackend:
         self._logArrayStats("predictSlice/raw_prediction_resized", predictionResized)
         return predictionResized
 
-    def predictVolume(self, volumeArray, modelPath, patch_size, pad_size):
+    def predictVolume(self, volumeArray, modelPath, patch_size, pad_size, progressCallback=None):
         import numpy as np
         
         array = np.asarray(volumeArray)
@@ -571,21 +651,29 @@ class CoreSegInferenceBackend:
         if array.ndim == 2:
             prediction2d = self.predictSlice(array, modelPath, patch_size, pad_size)
             self._logArrayStats("predictVolume/output_prediction_2d", prediction2d)
+
+            if progressCallback is not None:
+                progressCallback(1, 1)
+
             return prediction2d.astype(np.float32)
 
         if array.ndim != 3:
             raise RuntimeError(f"Expected a 2D or 3D scalar volume, got shape {array.shape}.")
 
         prediction = np.zeros(array.shape, dtype=np.float32)
+        totalSlices = int(array.shape[0])
 
-        for sliceIndex in range(array.shape[0]):
-            self._debug("predictVolume slice=%d/%d", int(sliceIndex), int(array.shape[0] - 1))
+        for sliceIndex in range(totalSlices):
+            self._debug("predictVolume slice=%d/%d", int(sliceIndex), int(totalSlices - 1))
             self._logArrayStats(f"predictVolume/input_slice_{sliceIndex}", array[sliceIndex])
 
-            predictionSlice = self.predictSlice(array[sliceIndex], modelPath, patch_size)
+            predictionSlice = self.predictSlice(array[sliceIndex], modelPath, patch_size, pad_size)
             prediction[sliceIndex] = predictionSlice
 
             self._logArrayStats(f"predictVolume/output_prediction_slice_{sliceIndex}", predictionSlice)
+
+            if progressCallback is not None:
+                progressCallback(sliceIndex + 1, totalSlices)
 
         self._logArrayStats("predictVolume/output_prediction_3d", prediction)
         return prediction
@@ -618,6 +706,7 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
             raise ValueError(f'Base dataset path {self.BASE_DATASET_PATH} doest not exist')
         
         self.trainProcess = None
+        self.inferenceProcess = None
         self.TrainProgressBar = TrainProgressBar
 
     def checkDependencies(self, force=False):
@@ -645,6 +734,18 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
             self._dependencyMessage = ""
 
         return self._dependenciesOk, self._dependencyMessage
+
+    def isProcessRunning(self, process):
+        return process is not None and process.state() != qt.QProcess.NotRunning
+
+    def isTrainRunning(self):
+        return self.isProcessRunning(self.trainProcess)
+
+    def isInferenceRunning(self):
+        return self.isProcessRunning(self.inferenceProcess)
+
+    def isBusy(self):
+        return self.isTrainRunning() or self.isInferenceRunning()
 
     def requireDependencies(self):
         ok, message = self.checkDependencies()
@@ -713,9 +814,36 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
         predictionArray = self.backend.predictVolume(inputArray, modelPath, patch_size, pad_size)
         self.backend._logArrayStats("process/prediction_array", predictionArray)
 
+        self._applyInferenceResult(
+            predictionArray=predictionArray,
+            inputVolume=inputVolume,
+            outputMaskVolume=outputMaskVolume,
+            outputPredictionVolume=outputPredictionVolume,
+            threshold=threshold,
+            showResult=showResult,
+        )
+
+        stopTime = time.time()
+        logging.info(f"CoreSeg inference completed in {stopTime - startTime:.2f} seconds")
+        self.backend._debug("process finished in %.2f seconds", float(stopTime - startTime))
+
+    def _applyInferenceResult(
+        self,
+        predictionArray,
+        inputVolume,
+        outputMaskVolume,
+        outputPredictionVolume,
+        threshold=0.5,
+        showResult=True,
+    ):
+        import numpy as np
+
         slicer.util.updateVolumeFromArray(outputPredictionVolume, predictionArray)
         self._copyVolumeGeometry(inputVolume, outputPredictionVolume)
-        outputPredictionVolume.SetName(outputPredictionVolume.GetName() or "CoreSegPrediction")
+
+        outputPredictionVolume.SetName(
+            outputPredictionVolume.GetName() or "CoreSegPrediction"
+        )
         outputPredictionVolume.CreateDefaultDisplayNodes()
 
         predictionDisplayNode = outputPredictionVolume.GetDisplayNode()
@@ -723,15 +851,11 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
             predictionDisplayNode.AutoWindowLevelOn()
             predictionDisplayNode.SetVisibility(True)
 
-        writtenPredictionArray = slicer.util.arrayFromVolume(outputPredictionVolume)
-        self.backend._logArrayStats("process/written_prediction_volume", writtenPredictionArray)
-
         if outputMaskVolume is not None:
             if not outputMaskVolume.IsA("vtkMRMLSegmentationNode"):
                 raise ValueError("Output mask node must be a Segmentation node.")
 
             maskArray = (predictionArray >= float(threshold)).astype(np.uint8)
-            self.backend._logArrayStats("process/mask_array", maskArray)
 
             outputMaskVolume.CreateDefaultDisplayNodes()
             outputMaskVolume.SetReferenceImageGeometryParameterFromVolumeNode(inputVolume)
@@ -747,13 +871,6 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
                 segmentId,
                 inputVolume,
             )
-
-            writtenMaskArray = slicer.util.arrayFromSegmentBinaryLabelmap(
-                outputMaskVolume,
-                segmentId,
-                inputVolume,
-            )
-            self.backend._logArrayStats("process/written_mask_array", writtenMaskArray)
 
             segmentationDisplayNode = outputMaskVolume.GetDisplayNode()
             if segmentationDisplayNode:
@@ -774,12 +891,10 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
             layoutManager = slicer.app.layoutManager()
             if layoutManager is not None:
                 for sliceViewName in layoutManager.sliceViewNames():
-                    compositeNode = layoutManager.sliceWidget(sliceViewName).mrmlSliceCompositeNode()
+                    compositeNode = layoutManager.sliceWidget(
+                        sliceViewName
+                    ).mrmlSliceCompositeNode()
                     compositeNode.SetForegroundOpacity(0.5)
-
-        stopTime = time.time()
-        logging.info(f"CoreSeg inference completed in {stopTime - startTime:.2f} seconds")
-        self.backend._debug("process finished in %.2f seconds", float(stopTime - startTime))
 
     @staticmethod
     def _matrixToList(matrix):
@@ -903,12 +1018,69 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
         slicer.util.updateVolumeFromArray(node, array)
         self._copySubsetVolumeGeometry(sourceVolume, node, dimension, frameFrom)
         return node
-    
-    def _onTrainStdout(self):
-        data = self.trainProcess.readAllStandardOutput()
 
+    def _onInferenceStdout(self):
+        data = self.inferenceProcess.readAllStandardOutput()
         text = data.data().decode("utf-8", errors="ignore")
 
+        logging.info(f"INFERENCE NODE: {text}")
+
+        for line in text.splitlines():
+            line = line.strip()
+
+            if line.startswith("PROGRESS"):
+                try:
+                    _, current, total = line.split(":")
+
+                    current = int(current)
+                    total = int(total)
+
+                    percent = int((current / total) * 100)
+
+                    self.TrainProgressBar.setValue(percent)
+                    self.TrainProgressBar.setFormat(
+                        f"Inference {current}/{total} slices (%p%)"
+                    )
+                except Exception as e:
+                    print("Inference progress parse error:", e)
+    
+    def _onInferenceStderr(self):
+        data = self.inferenceProcess.readAllStandardError()
+        text = data.data().decode("utf-8", errors="ignore")
+        logging.error(text)
+
+    def _onInferenceFinished(self, exitCode):
+        try:
+            if exitCode != 0:
+                slicer.util.errorDisplay(
+                    f"Inference failed\nExit code: {exitCode}"
+                )
+                return
+
+            import numpy as np
+
+            predictionArray = np.load(self._inferenceOutputPath)
+
+            self._applyInferenceResult(
+                predictionArray=predictionArray,
+                inputVolume=self._inferenceInputVolume,
+                outputMaskVolume=self._inferenceOutputMaskVolume,
+                outputPredictionVolume=self._inferenceOutputPredictionVolume,
+                threshold=self._inferenceThreshold,
+                showResult=self._inferenceShowResult,
+            )
+
+            slicer.util.infoDisplay("Inference completed")
+
+        finally:
+            self.inferenceProcess = None
+
+            if hasattr(self, "_inferenceFinishedCallback") and self._inferenceFinishedCallback:
+                self._inferenceFinishedCallback()
+
+    def _onTrainStdout(self):
+        data = self.trainProcess.readAllStandardOutput()
+        text = data.data().decode("utf-8", errors="ignore")
         logging.info(f'TRAIN NODE: {text}')
 
         for line in text.splitlines():
@@ -930,22 +1102,129 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
                     print("Progress parse error:", e)
                     
     def _onTrainFinished(self, exitCode):
-        if exitCode == 0:
-            slicer.util.infoDisplay("Training completed")
-        else:
-            slicer.util.errorDisplay(
-                f"Training failed\nExit code: {exitCode}"
-            )
+        try:
+            if exitCode == 0:
+                slicer.util.infoDisplay("Training completed")
+            else:
+                slicer.util.errorDisplay(
+                    f"Training failed\nExit code: {exitCode}"
+                )
+        finally:
+            self.trainProcess = None
+
+            if hasattr(self, "_trainFinishedCallback") and self._trainFinishedCallback:
+                self._trainFinishedCallback()
 
     def _onTrainStderr(self):
-
         data = self.trainProcess.readAllStandardError()
-
         text = data.data().decode("utf-8", errors="ignore")
-
         logging.error(text)
 
-    def AddData(self, SliceVolume, MaskVolume, DatasetName, SubsampleDimension=None, SubsampleFrom=None, SubsampleTo=None):
+    @staticmethod
+    def _pythonSlicerExecutable():
+        exeName = "PythonSlicer.exe" if os.name == "nt" else "PythonSlicer"
+        return os.path.join(slicer.app.slicerHome, "bin", exeName)
+
+    def RunInference(
+        self,
+        inputVolume,
+        outputMaskVolume,
+        outputPredictionVolume,
+        modelPath,
+        patch_size,
+        pad_size,
+        threshold=0.5,
+        showResult=True,
+        finishedCallback=None,
+    ):
+        self.requireDependencies()
+
+        if self.isBusy():
+            raise RuntimeError("Another CoreSeg operation is already running.")
+
+        import numpy as np
+        import tempfile
+
+        if inputVolume is None:
+            raise ValueError("Input volume is invalid.")
+        if inputVolume.GetImageData() is None:
+            raise ValueError("Input volume has no image data.")
+        if outputPredictionVolume is None:
+            raise ValueError("Output prediction volume is invalid.")
+        if not os.path.isfile(modelPath):
+            raise ValueError("Model file does not exist.")
+
+        self._inferenceFinishedCallback = finishedCallback
+        self._inferenceInputVolume = inputVolume
+        self._inferenceOutputMaskVolume = outputMaskVolume
+        self._inferenceOutputPredictionVolume = outputPredictionVolume
+        self._inferenceThreshold = float(threshold)
+        self._inferenceShowResult = bool(showResult)
+
+        workDir = tempfile.mkdtemp(prefix="coreseg_inference_")
+        inputPath = os.path.join(workDir, "input.npy")
+        outputPath = os.path.join(workDir, "prediction.npy")
+
+        inputArray = np.copy(slicer.util.arrayFromVolume(inputVolume))
+        np.save(inputPath, inputArray)
+
+        self._inferenceWorkDir = workDir
+        self._inferenceInputPath = inputPath
+        self._inferenceOutputPath = outputPath
+
+        moduleDir = os.path.dirname(os.path.abspath(__file__))
+
+        inferenceScript = os.path.join(
+            moduleDir,
+            "Resources",
+            "inference.py",
+        )
+
+        pythonExecutable = self._pythonSlicerExecutable()
+
+        logging.info(f"PYTHON: {pythonExecutable}")
+        logging.info(f"Inference Script: {inferenceScript}")
+
+        args = [
+            self._toShortPath(inferenceScript),
+            "--input_path", self._toShortPath(inputPath),
+            "--output_path", self._toShortPath(outputPath),
+            "--model_path", self._toShortPath(modelPath),
+            "--patch_size", str(patch_size),
+            "--pad_size", str(pad_size),
+        ]
+
+        self.TrainProgressBar.setValue(0)
+        self.TrainProgressBar.setFormat("Inference 0/%m slices (%p%)")
+
+        self.inferenceProcess = qt.QProcess()
+
+        self.inferenceProcess.readyReadStandardOutput.connect(
+            self._onInferenceStdout
+        )
+
+        self.inferenceProcess.readyReadStandardError.connect(
+            self._onInferenceStderr
+        )
+
+        self.inferenceProcess.finished.connect(
+            self._onInferenceFinished
+        )
+
+        self.inferenceProcess.start(
+            pythonExecutable,
+            args,
+        )
+
+    def AddData(
+        self, 
+        SliceVolume, 
+        MaskVolume, 
+        DatasetName, 
+        SubsampleDimension=None, 
+        SubsampleFrom=None, 
+        SubsampleTo=None
+    ):
         self.requireDependencies()
         import numpy as np
 
@@ -1051,18 +1330,33 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
             SubsampleFrom,
             SubsampleTo,
         )
-
     
-    def Train(self, modelPath, lr, max_epochs, base_data_prop, batchsize, val_prop):
+    def Train(
+        self, 
+        modelPath, 
+        lr, 
+        max_epochs, 
+        base_data_prop, 
+        batchsize, 
+        val_prop, 
+        finishedCallback=None
+    ):
+        self.requireDependencies()
+
+        if self.isBusy():
+            raise RuntimeError("Another CoreSeg operation is already running.")
+
+        self._trainFinishedCallback = finishedCallback
+
         moduleDir = os.path.dirname(os.path.abspath(__file__))
 
         trainerScript = os.path.join(
-        moduleDir, 
-        "Resources",
-        "finetune.py"
+            moduleDir, 
+            "Resources",
+            "finetune.py",
         )
 
-        pythonExecutable = os.path.join(slicer.app.slicerHome, "bin", "PythonSlicer.exe")
+        pythonExecutable = self._pythonSlicerExecutable()
         logging.info(f"PYTHON: {pythonExecutable}")
 
         trainerScript = self._toShortPath(trainerScript)
@@ -1070,21 +1364,13 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
 
         args = [
             trainerScript,
-
             "--model_path", self._toShortPath(modelPath),
-
             "--lr", str(lr),
-
             "--max_epochs", str(max_epochs),
-
             "--base_data_path", self._toShortPath(self.BASE_DATASET_PATH),
-
             "--user_data_path", self._toShortPath(self.USER_DATASET_PATH),
-
             "--base_prop",  str(base_data_prop),
-
             "--val_prop", str(val_prop),
-
             "--batchsize", str(batchsize),
         ]
 
@@ -1105,10 +1391,7 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
         self.trainProcess.start(
             pythonExecutable,
             args
-        )
-
-    
-
+        ) 
 
 
 class CoreSegTest(ScriptedLoadableModuleTest):
