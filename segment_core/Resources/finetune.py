@@ -74,17 +74,19 @@ class SegmentationDataset(Dataset):
         return len(self.images)
 
     def __getitem__(self, idx):
-
-        image = self.images[idx]
-        mask = self.masks[idx]
-
-        image = torch.tensor(image, dtype=torch.float32)
-        mask = torch.tensor(mask, dtype=torch.long)
+        image = np.asarray(self.images[idx], dtype=np.float32)
+        mask = np.asarray(self.masks[idx], dtype=np.uint8)
 
         if self.transform:
             transformed = self.transform(image=image, target=mask)
             image = transformed['image']
             mask = transformed['target']
+
+        image = torch.tensor(image, dtype=torch.float32)
+        mask = torch.tensor(mask, dtype=torch.long)
+
+        if image.ndim == 2:
+            image = image.unsqueeze(0)
 
         return image, mask
     
@@ -203,7 +205,7 @@ def Train(model, device, lr, base_data_path, user_data_path, base_prop, val_prop
             preds = model.forward(images)
 
             optimizer.zero_grad()
-            loss = bce_loss(preds, masks.unsqueeze(1)) + dice_loss(preds, masks)
+            loss = bce_loss(preds, masks.unsqueeze(1).float()) + dice_loss(preds, masks)
             loss.backward()
             optimizer.step()
 
@@ -217,6 +219,7 @@ if __name__ == "__main__":
     parser.add_argument("--base_prop", type=float, required=True)
     parser.add_argument("--val_prop", type=float, required=True)
     parser.add_argument("--batchsize", type=int, required=True)
+    parser.add_argument("--output_model_path", required=True)
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -240,4 +243,5 @@ if __name__ == "__main__":
         max_epochs=args.max_epochs,
     )
 
-    torch.save(model, args.model_path)
+    os.makedirs(os.path.dirname(args.output_model_path), exist_ok=True)
+    torch.save(model, args.output_model_path)

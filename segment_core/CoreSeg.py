@@ -367,6 +367,9 @@ class CoreSegWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self._setBusyUi(False)
 
     def _onTrainFinishedUi(self):
+        if hasattr(self.logic, "_lastTrainedModelPath") and os.path.isfile(self.logic._lastTrainedModelPath):
+            self.ui.modelPathEdit.currentPath = self.logic._lastTrainedModelPath
+
         self._setBusyUi(False)
 
     def onApplyButton(self):
@@ -697,7 +700,10 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
         base_dir = qt.QStandardPaths.writableLocation(qt.QStandardPaths.AppDataLocation)
         path = os.path.join(base_dir, "CoreSeg")
         os.makedirs(path, exist_ok=True)
-        self.USER_DATASET_PATH = path 
+        self.USER_DATASET_PATH = path
+
+        self.USER_MODEL_PATH = os.path.join(path, "Models")
+        os.makedirs(self.USER_MODEL_PATH, exist_ok=True)
 
         moduleDir = os.path.dirname(os.path.abspath(__file__))
         self.BASE_DATASET_PATH = os.path.join(moduleDir, 'Resources', 'Finetune')
@@ -1362,6 +1368,14 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
         trainerScript = self._toShortPath(trainerScript)
         logging.info(f"Trainer Script: {trainerScript}")
 
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        outputModelPath = os.path.join(
+            self.USER_MODEL_PATH,
+            f"finetuned_model_{timestamp}.pth",
+        )
+
+        self._lastTrainedModelPath = outputModelPath
+
         args = [
             trainerScript,
             "--model_path", self._toShortPath(modelPath),
@@ -1372,6 +1386,7 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
             "--base_prop",  str(base_data_prop),
             "--val_prop", str(val_prop),
             "--batchsize", str(batchsize),
+            "--output_model_path", self._toShortPath(outputModelPath),
         ]
 
         self.trainProcess = qt.QProcess()
