@@ -553,6 +553,20 @@ class CoreSegInferenceBackend:
 
         self._debug("Loaded model type=%s device=%s", type(model).__name__, device)
         return model, device
+    
+    def _percentileNormalize(self, img, p_low=2.5, p_high=97.5):
+        import numpy as np
+        img = img.astype(np.float32)
+
+        low, high = np.percentile(img, [p_low, p_high])
+
+        img = np.clip(img, low, high)
+
+        img = (img - low) / (high - low + 1e-8)
+
+        img = (img * 255.0).astype(np.uint8)
+
+        return img
 
     def _preprocessSlice(self, sliceArray):
         import numpy as np
@@ -565,6 +579,7 @@ class CoreSegInferenceBackend:
         originalShape = tuple(x.shape)
 
         # x = A.Resize(self.TARGET_HEIGHT, self.TARGET_WIDTH)(image=x)["image"]
+        x = self._percentileNormalize(x, p_low = 0, p_high= 97.5)
         x = A.Normalize()(image=x)["image"]
         x = np.asarray(x, dtype=np.float32)
 
