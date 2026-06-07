@@ -1015,6 +1015,7 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
     def _toShortPath(path):
             path = os.path.abspath(path)
 
+
             if os.name != "nt":
                 return path
 
@@ -1383,14 +1384,6 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
         trainerScript = self._toShortPath(trainerScript)
         logging.info(f"Trainer Script: {trainerScript}")
 
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        outputModelPath = os.path.join(
-            self.USER_MODEL_PATH,
-            f"finetuned_model_{timestamp}.pth",
-        )
-
-        self._lastTrainedModelPath = outputModelPath
-
         args = [
             trainerScript,
             "--model_path", self._toShortPath(modelPath),
@@ -1401,7 +1394,7 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
             "--base_prop",  str(base_data_prop),
             "--val_prop", str(val_prop),
             "--batchsize", str(batchsize),
-            "--output_model_path", self._toShortPath(outputModelPath),
+            "--output_model_path", self._toShortPath(self.USER_MODEL_PATH),
         ]
 
         self.trainProcess = qt.QProcess()

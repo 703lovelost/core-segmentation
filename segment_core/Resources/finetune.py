@@ -8,12 +8,17 @@ import albumentations as A
 import argparse
 import os
 import math
+import ctypes
+from datetime import datetime
+
+import metrics
 
 def read_dataset_list(path):
     dataset_dirs = os.listdir(path)
     # data = {}
     images = []
     masks = []
+    datasets = []
     for data_dir in dataset_dirs:
         masks_path = os.path.join(path, data_dir, 'masks.npy')
         slices_path = os.path.join(path, data_dir, 'slices.npy')
@@ -30,9 +35,10 @@ def read_dataset_list(path):
         
         images.extend(img_list)
         masks.extend(msk_list)
+        datasets.append(data_dir)
         # data[prefix + ' ' + data_dir] = {'images': np.load(slices_path), 'masks': np.load(masks_path)}
 
-    return {'images': images, 'masks': masks}
+    return {'images': images, 'masks': masks}, datasets
 
 
 def train_val_split(data, val_prop):
@@ -64,11 +70,12 @@ class PercentileNormalize(A.ImageOnlyTransform):
 
 class SegmentationDataset(Dataset):
 
-    def __init__(self, data, transform=None):
+    def __init__(self, data, source, transform=None):
 
         self.images = data['images']
         self.masks = data['masks']
         self.transform = transform
+        self.source = source
 
     def __len__(self):
         return len(self.images)
@@ -83,12 +90,12 @@ class SegmentationDataset(Dataset):
             mask = transformed['target']
 
         image = torch.tensor(image, dtype=torch.float32)
-        mask = torch.tensor(mask, dtype=torch.long)
+        mask = torch.tensor(mask, dtype=torch.float32)
 
         if image.ndim == 2:
             image = image.unsqueeze(0)
 
-        return image, mask
+        return image, mask, torch.tensor(self.source)
     
 
 req_size = 512
@@ -153,18 +160,40 @@ class DiceLoss(torch.nn.Module):
             return loss
 
 
+def toLongPath(path):
+    path = os.path.abspath(path)
+
+    if os.name != "nt":
+        return path
+
+    buffer = ctypes.create_unicode_buffer(4096)
+
+    result = ctypes.windll.kernel32.GetLongPathNameW(
+        path,
+        buffer,
+        4096
+    )
+
+    if result == 0:
+        return path
+
+    return buffer.value
+
+
 def Train(model, device, lr, base_data_path, user_data_path, base_prop, val_prop, batchsize, max_epochs):
-    base_data = read_dataset_list(base_data_path)
-    user_data = read_dataset_list(user_data_path)
+    base_data, base_datasets = read_dataset_list(base_data_path)
+    user_data, user_datasets = read_dataset_list(user_data_path)
+
+    print(f'base {len(base_data['images'])} samples\nuser {len(user_data['images'])} samples', flush=True)
 
     base_data_train, base_data_val = train_val_split(base_data, val_prop)
     user_data_train, user_data_val = train_val_split(user_data, val_prop)
 
-    base_train_dataset = SegmentationDataset(base_data_train, train_transform)
-    base_val_dataset = SegmentationDataset(base_data_val, eval_transform)
+    base_train_dataset = SegmentationDataset(base_data_train, 0, train_transform)
+    base_val_dataset = SegmentationDataset(base_data_val, 0, eval_transform)
 
-    user_train_dataset = SegmentationDataset(user_data_train, train_transform)
-    user_val_dataset = SegmentationDataset(user_data_val, eval_transform)
+    user_train_dataset = SegmentationDataset(user_data_train, 1, train_transform)
+    user_val_dataset = SegmentationDataset(user_data_val, 1, eval_transform)
 
     train_dataset = ConcatDataset([base_train_dataset, user_train_dataset])
     val_dataset = ConcatDataset([base_val_dataset, user_val_dataset])
@@ -196,9 +225,25 @@ def Train(model, device, lr, base_data_path, user_data_path, base_prop, val_prop
         threshold = 1e-3          
     )
 
+    early_stop_lr = 1e-8
+
+    metric_names = [
+        "iou",
+        "prauc",
+        "f1",
+        "precision",
+        "recall",
+    ]
+
+
     for epoch in range(max_epochs):
+        metrics_dict = {'base': {metric: 0.0 for metric in metric_names}, 
+                        'user': {metric: 0.0 for metric in metric_names},
+                        'train loss': 0.0,
+                        'validation loss': 0.0
+                        }
         model.train()
-        for images, masks in train_loader:
+        for images, masks, sources in train_loader:
             images = images.to(device)
             masks = masks.to(device)
 
@@ -208,6 +253,59 @@ def Train(model, device, lr, base_data_path, user_data_path, base_prop, val_prop
             loss = bce_loss(preds, masks.unsqueeze(1).float()) + dice_loss(preds, masks)
             loss.backward()
             optimizer.step()
+
+            metrics_dict['train loss'] += loss.item()
+        
+        metrics_dict['train loss'] /= len(train_loader)
+
+        model.eval()
+        for images, masks, sources in val_loader:
+            images = images.to(device)
+            masks = masks.to(device)
+
+            preds = model.forward(images)
+        
+            metrics_dict['validation loss'] += (bce_loss(preds, masks.unsqueeze(1)) + dice_loss(preds, masks)).item()
+
+            base_mask = (sources == 0)
+            user_mask = (sources == 1)
+
+            if base_mask.any():
+                base_preds = preds[base_mask]
+                base_masks = masks[base_mask]
+
+                metrics_dict['base']['iou'] += metrics.compute_binary_iou(base_preds, base_masks)
+                metrics_dict['base']['prauc'] += metrics.pr_auc_score(base_preds, base_masks)
+
+                f1, precision, recall = metrics.metrix(base_preds, base_masks)
+                metrics_dict['base']['f1'] += f1
+                metrics_dict['base']['precision'] += precision
+                metrics_dict['base']['recall'] += recall
+
+            if user_mask.any():
+                user_preds = preds[user_mask]
+                user_masks = masks[user_mask]
+
+                metrics_dict['user']['iou'] += metrics.compute_binary_iou(user_preds, user_masks)
+                metrics_dict['user']['prauc'] += metrics.pr_auc_score(user_preds, user_masks)
+
+                f1, precision, recall = metrics.metrix(user_preds, user_masks)
+                metrics_dict['user']['f1'] += f1
+                metrics_dict['user']['precision'] += precision
+                metrics_dict['user']['recall'] += recall
+
+        for group in ['base', 'user']:
+            for metric in metric_names:
+                metrics_dict[group][metric] /= len(val_loader)
+        metrics_dict['validation loss'] /= len(val_loader)
+        
+        print(f"PROGRESS:{epoch+1}:{max_epochs}", flush=True)
+
+        plateau_scheduler.step(metrics_dict['validation loss'])
+        current_lr = optimizer.param_groups[0]["lr"]
+        if current_lr <= early_stop_lr:
+            print(f"Early stopping: lr reached {current_lr}", flush=True)
+            break
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -221,6 +319,9 @@ if __name__ == "__main__":
     parser.add_argument("--batchsize", type=int, required=True)
     parser.add_argument("--output_model_path", required=True)
     args = parser.parse_args()
+
+    print(f'received {args.model_path}', flush=True)
+    print(f'received {args.output_model_path}', flush=True)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -243,5 +344,11 @@ if __name__ == "__main__":
         max_epochs=args.max_epochs,
     )
 
-    os.makedirs(os.path.dirname(args.output_model_path), exist_ok=True)
-    torch.save(model, args.output_model_path)
+
+    output_model_path = args.output_model_path
+    os.makedirs(os.path.dirname(output_model_path), exist_ok=True)
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    model_save_path = os.path.join(output_model_path, f"finetuned_model_{timestamp}.pth")
+    torch.save(model, model_save_path)
+    print(f'model saved at {model_save_path}')
+    
