@@ -1,5 +1,6 @@
 
 from torch.utils.data import Dataset, ConcatDataset, DataLoader, WeightedRandomSampler
+from torch.utils.tensorboard import SummaryWriter
 
 import torch
 import numpy as np
@@ -180,7 +181,8 @@ def toLongPath(path):
     return buffer.value
 
 
-def Train(model, device, lr, base_data_path, user_data_path, base_prop, val_prop, batchsize, max_epochs):
+def Train(model, device, lr, base_data_path, user_data_path, base_prop, val_prop, batchsize, max_epochs, tb_logger):
+    print("Writer id:", id(tb_logger))
     base_data, base_datasets = read_dataset_list(base_data_path)
     user_data, user_datasets = read_dataset_list(user_data_path)
 
@@ -234,7 +236,6 @@ def Train(model, device, lr, base_data_path, user_data_path, base_prop, val_prop
         "precision",
         "recall",
     ]
-
 
     for epoch in range(max_epochs):
         metrics_dict = {'base': {metric: 0.0 for metric in metric_names}, 
@@ -298,14 +299,27 @@ def Train(model, device, lr, base_data_path, user_data_path, base_prop, val_prop
             for metric in metric_names:
                 metrics_dict[group][metric] /= len(val_loader)
         metrics_dict['validation loss'] /= len(val_loader)
+
+        current_lr = optimizer.param_groups[0]["lr"]
+
+        tb_logger.add_scalar("Loss/train", metrics_dict["train loss"], epoch)
+        tb_logger.add_scalar("Loss/val", metrics_dict["validation loss"], epoch)
+        tb_logger.add_scalar("LR", current_lr, epoch)
+        tb_logger.flush()
+
+        for metric in metric_names:
+            tb_logger.add_scalar(f"Base/{metric}", metrics_dict["base"][metric], epoch)
+            tb_logger.add_scalar(f"User/{metric}", metrics_dict["user"][metric], epoch)
         
         print(f"PROGRESS:{epoch+1}:{max_epochs}", flush=True)
 
         plateau_scheduler.step(metrics_dict['validation loss'])
-        current_lr = optimizer.param_groups[0]["lr"]
         if current_lr <= early_stop_lr:
             print(f"Early stopping: lr reached {current_lr}", flush=True)
             break
+    
+    tb_logger.close()
+        
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -318,6 +332,7 @@ if __name__ == "__main__":
     parser.add_argument("--val_prop", type=float, required=True)
     parser.add_argument("--batchsize", type=int, required=True)
     parser.add_argument("--output_model_path", required=True)
+    parser.add_argument("--tensorboard_path", required=True)
     args = parser.parse_args()
 
     print(f'received {args.model_path}', flush=True)
@@ -332,6 +347,8 @@ if __name__ == "__main__":
     )
     model = model.to(device)
 
+    tensorboard_logger = SummaryWriter(log_dir=os.path.join(args.tensorboard_path, f'{datetime.now().strftime('%d_%m %H_%M')}'))
+
     Train(
         model=model,
         device=device,
@@ -342,6 +359,7 @@ if __name__ == "__main__":
         val_prop=args.val_prop,
         batchsize=args.batchsize,
         max_epochs=args.max_epochs,
+        tb_logger=tensorboard_logger,
     )
 
 
