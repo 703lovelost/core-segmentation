@@ -720,6 +720,9 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
         self.USER_MODEL_PATH = os.path.join(path, "Models")
         os.makedirs(self.USER_MODEL_PATH, exist_ok=True)
 
+        self.TENSORBOARD_PATH = os.path.join(path, "Tensorboard")
+        os.makedirs(self.TENSORBOARD_PATH, exist_ok=True)
+
         moduleDir = os.path.dirname(os.path.abspath(__file__))
         self.BASE_DATASET_PATH = os.path.join(moduleDir, 'Resources', 'Finetune')
 
@@ -1395,6 +1398,7 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
             "--val_prop", str(val_prop),
             "--batchsize", str(batchsize),
             "--output_model_path", self._toShortPath(self.USER_MODEL_PATH),
+            "--tensorboard_path", self._toShortPath(self.TENSORBOARD_PATH),
         ]
 
         self.trainProcess = qt.QProcess()
@@ -1414,7 +1418,49 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
         self.trainProcess.start(
             pythonExecutable,
             args
-        ) 
+        )
+
+        self.tensorboardProcess = qt.QProcess()
+
+        self.tensorboardProcess.readyReadStandardOutput.connect(
+            self.on_out
+        )
+
+        self.tensorboardProcess.readyReadStandardError.connect(
+            self.on_error
+        )
+
+        host = "localhost"
+        port = get_free_port(host)
+
+        args = [
+            "--logdir", self.TENSORBOARD_PATH,
+            "--port", str(port),
+            "--host", host
+        ]
+
+        self.tensorboardProcess.start("tensorboard", args)
+
+        logging.info(f'tensorboard running at {host+':'+str(port)}')
+    
+    def on_error(self):
+        data = self.tensorboardProcess.readAllStandardError()
+        text = data.data().decode("utf-8", errors="ignore")
+        logging.error(f'TENSORBOARD NODE: {text}')
+
+    def on_out(self):
+        data = self.tensorboardProcess.readAllStandardOutput()
+        text = data.data().decode("utf-8", errors="ignore")
+        logging.info(f'TENSORBOARD NODE: {text}')
+
+import socket
+
+def get_free_port(host):
+    s = socket.socket()
+    s.bind((host, 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port 
 
 
 class CoreSegTest(ScriptedLoadableModuleTest):
