@@ -55,7 +55,7 @@ class CoreSegWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui = slicer.util.childWidgetVariables(uiWidget)
         uiWidget.setMRMLScene(slicer.mrmlScene)
 
-        self.logic = CoreSegLogic(self.ui.TrainProgressBar)
+        self.logic = CoreSegLogic(self.ui.TrainProgressBar, self.ui.InferenceProgressBar)
         self.dependenciesOk, self.dependencyMessage = self.logic.checkDependencies(force=True)
 
         self.ui.inputSelector.connect("currentNodeChanged(vtkMRMLNode*)", self._checkCanApply)
@@ -705,7 +705,7 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
         "cv2": "opencv-python",
     }
 
-    def __init__(self, TrainProgressBar):
+    def __init__(self, TrainProgressBar, InferenceProgressBar):
         super().__init__()
         self.backend = CoreSegInferenceBackend()
         self._dependenciesChecked = False
@@ -732,6 +732,7 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
         self.trainProcess = None
         self.inferenceProcess = None
         self.TrainProgressBar = TrainProgressBar
+        self.InferenceProgressBar = InferenceProgressBar
 
     def checkDependencies(self, force=False):
         import importlib.util
@@ -1062,8 +1063,8 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
 
                     percent = int((current / total) * 100)
 
-                    self.TrainProgressBar.setValue(percent)
-                    self.TrainProgressBar.setFormat(
+                    self.InferenceProgressBar.setValue(percent)
+                    self.InferenceProgressBar.setFormat(
                         f"Inference {current}/{total} slices (%p%)"
                     )
                 except Exception as e:
@@ -1219,8 +1220,8 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
             "--pad_size", str(pad_size),
         ]
 
-        self.TrainProgressBar.setValue(0)
-        self.TrainProgressBar.setFormat("Inference 0/%m slices (%p%)")
+        self.InferenceProgressBar.setValue(0)
+        self.InferenceProgressBar.setFormat("Inference 0/%m slices (%p%)")
 
         self.inferenceProcess = qt.QProcess()
 

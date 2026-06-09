@@ -218,6 +218,16 @@
     </widget>
    </item>
    <item>
+    <widget class="QProgressBar" name="InferenceProgressBar">
+     <property name="value">
+      <number>0</number>
+     </property>
+     <property name="format">
+      <string>Inference idle</string>
+     </property>
+    </widget>
+   </item>
+   <item>
     <widget class="ctkCollapsibleButton" name="FinetuneCollapse">
      <property name="enabled">
       <bool>true</bool>
