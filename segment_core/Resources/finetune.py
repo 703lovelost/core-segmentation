@@ -21,8 +21,8 @@ def read_dataset_list(path):
     masks = []
     datasets = []
     for data_dir in dataset_dirs:
-        masks_path = os.path.join(path, data_dir, 'masks.npy')
-        slices_path = os.path.join(path, data_dir, 'slices.npy')
+        masks_path = os.path.join(path, data_dir, 'numpy', 'masks.npy')
+        slices_path = os.path.join(path, data_dir, 'numpy', 'slices.npy')
 
         if (not os.path.exists(masks_path)) or (not os.path.exists(slices_path)):
             print(f'"{data_dir}" dataset folder doesnt contain masks.npy or slices.npy')
@@ -101,7 +101,7 @@ class SegmentationDataset(Dataset):
 
 req_size = 512
 train_transform = A.Compose([
-    A.RandomSizedCrop(min_max_height=[256, 1024], size = [512, 512], w2h_ratio=1, p = 1),
+    A.RandomSizedCrop(min_max_height=[req_size // 2, req_size * 2], size = [req_size, req_size], w2h_ratio=1, p = 1),
     A.RandomBrightnessContrast(p = 0.5, brightness_limit=[-0.1, 0.1], contrast_limit=[-0.1, 0.1], brightness_by_max=False),
     A.GaussNoise(p = 0.1, std_range=(0.02, 0.05)),
     A.GaussianBlur(p = 0.1, sigma_limit = [0.1, 0.2]),
@@ -128,7 +128,7 @@ train_transform = A.Compose([
 ], additional_targets={'target': 'mask'})
 
 eval_transform = A.Compose([
-    A.RandomSizedCrop(min_max_height=[512, 512], size = [512, 512], w2h_ratio=1, p = 1),
+    A.RandomSizedCrop(min_max_height=[req_size, req_size], size = [req_size, req_size], w2h_ratio=1, p = 1),
     PercentileNormalize(p_low=0),
     A.Normalize(),
 ], additional_targets={'target': 'mask'})

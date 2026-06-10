@@ -714,8 +714,9 @@ class CoreSegLogic(ScriptedLoadableModuleLogic):
 
         base_dir = qt.QStandardPaths.writableLocation(qt.QStandardPaths.AppDataLocation)
         path = os.path.join(base_dir, "CoreSeg")
-        os.makedirs(path, exist_ok=True)
-        self.USER_DATASET_PATH = path
+
+        self.USER_DATASET_PATH = os.path.join(path, "Datasets")
+        os.makedirs(self.USER_DATASET_PATH, exist_ok=True)
 
         self.USER_MODEL_PATH = os.path.join(path, "Models")
         os.makedirs(self.USER_MODEL_PATH, exist_ok=True)
