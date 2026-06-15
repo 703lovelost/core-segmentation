@@ -1,6 +1,6 @@
-# Core Segmentation
+# Core segmentation extension for Slicer 3D
 
-Slicer 3D extension for MRI core segmentation.
+We present **CoreSeg** - Slicer 3D extension for MRI core segmentation.
 
 ## Expected input
 
@@ -11,12 +11,12 @@ Slicer 3D extension for MRI core segmentation.
 * Prediction scalar volume.
 * Segmentation mask.
 
-## Setting up
+## Setting up & working with CoreSeg
 
-1. Clone this repository to your `PATH_TO_SLICER/extensions` folder.
-2. Install dependencies to your Slicer environment:
+Everything you need is in this ![wiki section]([https://github.com/703lovelost/core-segmentation/wiki](https://github.com/703lovelost/core-segmentation/wiki/How-to-work-with-CoreSeg)).
 
-```
-PATH_TO_SLICER/bin/PythonSlicer -m pip install -r requirements.txt
-```
-3. The extension should be available in 'Segmentation' module category.
+## Troubleshooting
+
+We put ![here](https://github.com/703lovelost/core-segmentation/wiki/Troubleshooting) everything that might look buggy and suspicious.
+
+If you've met something unusual while using the extension, please create an issue.
